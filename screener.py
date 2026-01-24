@@ -5,71 +5,112 @@ import requests
 import time
 import os
 
-USER_AGENT = 'Minervini-Screener/GA (contact: your-email@example.com)'
+# --- 設定エリア ---
+USER_AGENT = 'Stock-Screener/GitHub-Strict (contact: your-email@example.com)'
+LOCAL_SAVE_PATH = 'minervini_final_results.csv' # ローカルに一時保存
+# ----------------
 
-def get_full_universe_tickers():
+def get_full_universe():
     headers = {'User-Agent': USER_AGENT, 'Accept-Encoding': 'gzip, deflate'}
     url = "https://www.sec.gov/files/company_tickers.json"
     try:
-        response = requests.get(url, headers=headers)
-        data = response.json()
-        return [item['ticker'].replace('-', '.') for item in data.values()]
-    except: return []
+        res = requests.get(url, headers=headers)
+        res.raise_for_status()
+        return [item['ticker'].replace('-', '.') for item in res.json().values()]
+    except Exception as e:
+        print(f"Ticker list error: {e}")
+        return []
 
-def get_market_health(idx_df):
-    c = idx_df['Close'].squeeze()
-    v = idx_df['Volume'].squeeze()
-    sma50 = c.rolling(50).mean().iloc[-1]
-    curr = c.iloc[-1]
-    recent_close = c.iloc[-25:]
-    recent_vol = v.iloc[-25:]
-    dist_days = 0
-    acc_days = 0
-    for i in range(1, len(recent_close)):
-        if recent_close.iloc[i] < recent_close.iloc[i-1] and recent_vol.iloc[i] > recent_vol.iloc[i-1]: dist_days += 1
-        if recent_close.iloc[i] > recent_close.iloc[i-1] and recent_vol.iloc[i] > recent_vol.iloc[i-1]: acc_days += 1
-    score = 1
-    if curr > sma50 and dist_days < 4 and acc_days > dist_days: score = 2
-    if curr < sma50 or dist_days >= 6 or (dist_days == 5 and dist_days > acc_days): score = 0
-    return score, dist_days, acc_days
+def get_market_health_summary():
+    try:
+        idx = yf.download("^GSPC", period="1y", progress=False, auto_adjust=True)
+        if isinstance(idx.columns, pd.MultiIndex): 
+            idx.columns = idx.columns.get_level_values(0)
+        c, v = idx['Close'].squeeze(), idx['Volume'].squeeze()
+        sma50 = c.rolling(50).mean().iloc[-1]
+        dist_days = 0
+        for i in range(1, 26):
+            if c.iloc[-i] < c.iloc[-i-1] and v.iloc[-i] > v.iloc[-i-1]: 
+                dist_days += 1
+        status = "強気 (Perfect)" if c.iloc[-1] > sma50 and dist_days < 5 else (
+                 "警戒 (Fair)" if c.iloc[-1] > sma50 else "弱気 (Fail)")
+        return f"--- 市場環境判定: {status} [売り抜け日: {dist_days}日] ---"
+    except: 
+        return "--- 市場環境判定: 取得エラー ---"
 
-def analyze_ticker(ticker, idx_close):
+def analyze_ticker_master_enriched(ticker):
     try:
         stock = yf.Ticker(ticker)
+        # 1. 時価総額チェック
         info = stock.info
         mkt_cap = info.get('marketCap', 0)
-        if mkt_cap == 0 or mkt_cap > 100 * 1e9: return None
-        df = stock.history(period="1y", auto_adjust=True)
+        if mkt_cap == 0 or mkt_cap > 100 * 1e9: 
+            return None
+
+        # 2. データ取得
+        df = stock.history(period="1y", interval="1d", auto_adjust=True)
         if len(df) < 200: return None
+        if isinstance(df.columns, pd.MultiIndex): 
+            df.columns = df.columns.get_level_values(0)
+
         c, h, l, v = df['Close'], df['High'], df['Low'], df['Volume']
         sma20, sma50, sma200 = c.rolling(20).mean(), c.rolling(50).mean(), c.rolling(200).mean()
-        ema10 = c.ewm(span=10, adjust=False).mean()
-        vol_sma50 = v.rolling(50).mean()
+        ema10, vol_sma50 = c.ewm(span=10, adjust=False).mean(), v.rolling(50).mean()
+
         tags = []
-        if (c.iloc[-1] > sma20.iloc[-1] > sma50.iloc[-1] > sma200.iloc[-1]) and (sma200.iloc[-20:].diff().dropna() > 0).all() and (v.iloc[-3:] < vol_sma50.iloc[-3:]).all() and ((c.rolling(20).std().iloc[-1]*4/sma20.iloc[-1]) == (c.rolling(20).std()*4/sma20).iloc[-20:].min()):
+        # A. VCP_Original
+        is_stage2_vcp = (c.iloc[-1] > sma20.iloc[-1] > sma50.iloc[-1] > sma200.iloc[-1])
+        sma200_rising = (sma200.iloc[-20:].diff().dropna() > 0).all()
+        vol_dry_up = (v.iloc[-3:] < vol_sma50.iloc[-3:]).all()
+        bbw = (c.rolling(20).std() * 4) / sma20
+        bbw_min = bbw.iloc[-1] == bbw.iloc[-20:].min()
+        if is_stage2_vcp and sma200_rising and vol_dry_up and bbw_min:
             tags.append("VCP_Original")
+
+        # B. 短期トレンド
         if (c.iloc[-1] > sma20.iloc[-1] > sma50.iloc[-1]):
-            if (c.iloc[-1] / c.iloc[-40] >= 1.70) and (c.iloc[-3:] > ema10.iloc[-3:]).all(): tags.append("PowerPlay")
-            if (1.10 <= c.iloc[-1]/c.iloc[-10] <= 1.70) and (c.iloc[-1]/h.iloc[-10:].max() >= 0.90): tags.append("High-Base")
+            # パワープレイ
+            gain_8w = (c.iloc[-1] / c.iloc[-40]) >= 1.70 if len(c) >= 40 else False
+            on_ema10 = (c.iloc[-3:] > ema10.iloc[-3:]).all()
+            max_40 = h.iloc[-40:].max()
+            if gain_8w and on_ema10 and (c.iloc[-1] / max_40 >= 0.75):
+                tags.append("PowerPlay(70%+)")
+            # ハイ・ベース
+            gain_2w = 1.10 <= (c.iloc[-1] / c.iloc[-10]) <= 1.70 if len(c) >= 10 else False
+            if gain_2w and (c.iloc[-1] / h.iloc[-10:].max() >= 0.90) and ((h.iloc[-3:] - l.iloc[-3:]).mean() < (h - l).rolling(10).mean().iloc[-1]):
+                tags.append("High-Base")
+
         if tags:
-            rev_g, eps_g = info.get('revenueGrowth', 0), info.get('earningsGrowth', 0)
-            f_score = 2 if (rev_g >= 0.25 and eps_g >= 0.25) else (1 if (rev_g >= 0.25 or eps_g >= 0.25 or rev_g >= 0.50) else 0)
-            return {"Ticker": ticker, "Price": round(c.iloc[-1], 2), "Tags": ", ".join(tags), "F_Score": f_score}
+            rev_g, eps_g = info.get('revenueGrowth'), info.get('earningsGrowth')
+            if rev_g is None or eps_g is None: f_label = "【要確認】データ不足"
+            elif rev_g >= 0.25 and eps_g >= 0.25: f_label = "【超優秀】基準クリア"
+            elif rev_g >= 0.25 or eps_g >= 0.25 or rev_g >= 0.50: f_label = "【良好】一部成長"
+            else: f_label = "【不足】低成長"
+
+            return {
+                "銘柄": ticker, "価格": round(c.iloc[-1], 2), "パターン": ", ".join(tags),
+                "成長性判定": f_label,
+                "売上成長(%)": round(rev_g * 100, 1) if rev_g else "不明",
+                "EPS成長(%)": round(eps_g * 100, 1) if eps_g else "不明",
+                "時価総額(B)": round(mkt_cap/1e9, 2)
+            }
     except: pass
     return None
 
 if __name__ == "__main__":
-    universe = get_full_universe_tickers()
-    idx_df = yf.download("^GSPC", period="1y", progress=False, auto_adjust=True)
-    m_score, d_days, a_days = get_market_health(idx_df)
-    print(f"Market Score: {m_score}, Dist: {d_days}, Acc: {a_days}")
-    
-    found = []
-    for ticker in universe[:500]: # テスト用に最初は数を絞るのを推奨
-        res = analyze_ticker(ticker, idx_df['Close'].squeeze())
+    print(f"\n{get_market_health_summary()}\n")
+    universe = get_full_universe()
+    results = []
+    print(f"スキャン開始: {len(universe)}銘柄")
+    for i, ticker in enumerate(universe):
+        res = analyze_ticker_master_enriched(ticker)
         if res:
-            found.append(res)
-            print(f"Found: {res['Ticker']}")
-        time.sleep(0.1)
-    
-    pd.DataFrame(found).to_csv("results.csv", index=False)
+            results.append(res)
+            print(f"的中: {res['銘柄']} - {res['パターン']} ({res['成長性判定']})")
+        if i % 100 == 0: print(f"Progress: {i}/{len(universe)}...")
+        time.sleep(0.12) # GitHub ActionsのIP制限対策
+
+    if results:
+        df = pd.DataFrame(results)
+        df.to_csv(LOCAL_SAVE_PATH, index=False, encoding='utf-8-sig')
+        print(f"\n完了。{len(results)}件検出。")
