@@ -1,19 +1,20 @@
-name: Stock Screener Full Auto
+name: Stock Screener
 
 on:
-  workflow_dispatch: # スマホやブラウザから手動で実行するためのボタン
+  workflow_dispatch:
+  schedule:
+    - cron: '0 23 * * 1-5' # 平日の日本時間 朝8時 (UTC 23:00)
 
 jobs:
-  run-screener:
+  build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.11'
 
       - name: Install dependencies
         run: |
@@ -22,7 +23,8 @@ jobs:
       - name: Run Screener
         run: python screener.py
 
-      - name: Upload to Google Drive
+      - name: Upload to Google Drive (Final Check)
+        if: always() # 解析が途中で止まっても、そこまでの結果を上げようとする
         env:
           GDRIVE_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
@@ -33,24 +35,29 @@ jobs:
           from googleapiclient.discovery import build
           from googleapiclient.http import MediaFileUpload
 
-          # 秘密情報の読み込み（改行が含まれていてもjson.loadsが適切に処理します）
+          fid = os.environ['GDRIVE_FOLDER_ID'].strip()
+          fname = 'minervini_final_results.csv'
+          if not os.path.exists(fname):
+              print("ファイルが生成されていません。")
+              exit(0)
+
           info = json.loads(os.environ['GDRIVE_JSON'])
           creds = service_account.Credentials.from_service_account_info(info, scopes=['https://www.googleapis.com/auth/drive'])
           service = build('drive', 'v3', credentials=creds)
 
-          # 指定されたフォルダID（1n8b35TYpli2L1ZzXV9_HAe0pQPqHZidJ）を直接使用
-          folder_id = os.environ['GDRIVE_FOLDER_ID']
-          file_name = 'minervini_final_results.csv'
-
-          # アップロード設定
-          file_metadata = {'name': file_name, 'parents': [folder_id]}
-          media = MediaFileUpload(file_name, mimetype='text/csv')
-          
-          # 実行
           try:
+              # アップロード。 parents はリスト形式で渡す
+              file_metadata = {'name': fname, 'parents': [fid]}
+              media = MediaFileUpload(fname, mimetype='text/csv', resumable=True)
               file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-              print(f"転送成功！ Google Drive上のFile ID: {file.get('id')}")
+              print(f"Drive転送成功 ID: {file.get('id')}")
           except Exception as e:
-              print(f"アップロード中にエラーが発生しました: {e}")
-              raise e
+              print(f"Driveエラー (Artifactsを確認してください): {e}")
           EOF
+
+      - name: Save to GitHub Artifacts (Safe Backup)
+        if: always() # Driveが失敗しても必ずGitHub上に残す
+        uses: actions/upload-artifact@v4
+        with:
+          name: stock-results-${{ github.run_id }}
+          path: minervini_final_results.csv
