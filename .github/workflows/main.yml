@@ -1,14 +1,13 @@
 name: Stock Screener Full Auto
 
 on:
-  workflow_dispatch: # スマホから手動で実行するためのボタン
+  workflow_dispatch:
 
 jobs:
   run-screener:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -20,8 +19,6 @@ jobs:
           pip install yfinance pandas numpy requests google-api-python-client google-auth-httplib2 google-auth-oauthlib
 
       - name: Run Screener
-        env:
-          GDRIVE_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT }}
         run: python screener.py
 
       - name: Upload to Google Drive
@@ -39,7 +36,7 @@ jobs:
           creds = service_account.Credentials.from_service_account_info(info, scopes=['https://www.googleapis.com/auth/drive'])
           service = build('drive', 'v3', credentials=creds)
 
-          # INVESTMENT/Minervini フォルダを検索
+          # Google Drive上の 'Minervini' フォルダを検索
           query = "name = 'Minervini' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
           results = service.files().list(q=query, fields="files(id)").execute()
           files = results.get('files', [])
@@ -47,9 +44,9 @@ jobs:
               raise Exception("Minerviniフォルダが見つかりません。共有設定を確認してください。")
           folder_id = files[0].get('id')
 
-          # ファイルのアップロード（上書きではなく新規作成される設定です）
+          # ファイルをアップロード（常に新しいファイルとして作成）
           file_metadata = {'name': 'minervini_final_results.csv', 'parents': [folder_id]}
           media = MediaFileUpload('minervini_final_results.csv', mimetype='text/csv')
           service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-          print("Google Driveへのアップロードが完了しました。")
+          print("Google Driveへの転送が成功しました。")
           EOF
