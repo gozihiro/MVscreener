@@ -1,7 +1,7 @@
-name: Stock Screener
+name: Minervini Screener Auto
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # 手動実行用
   schedule:
     - cron: '0 23 * * 1-5' # 平日の日本時間 朝8時 (UTC 23:00)
 
@@ -9,22 +9,27 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.11' # 安定したバージョンを指定
 
       - name: Install dependencies
         run: |
-          pip install yfinance pandas numpy requests google-api-python-client google-auth-httplib2 google-auth-oauthlib
+          pip install --upgrade pip
+          # curl_cffi を明示的に追加して yfinance の最新仕様に対応
+          pip install yfinance pandas numpy requests google-api-python-client google-auth-httplib2 google-auth-oauthlib curl_cffi
 
       - name: Run Screener
+        # 1万件の長旅。エラーが起きてもステップを落とさないよう工夫
         run: python screener.py
 
-      - name: Upload to Google Drive (Final Check)
-        if: always() # 解析が途中で止まっても、そこまでの結果を上げようとする
+      - name: Upload to Google Drive
+        # スクリーナーが途中で止まっても、そこまでのCSVがあればアップロードを試みる
+        if: always()
         env:
           GDRIVE_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
@@ -35,29 +40,36 @@ jobs:
           from googleapiclient.discovery import build
           from googleapiclient.http import MediaFileUpload
 
-          fid = os.environ['GDRIVE_FOLDER_ID'].strip()
+          # 1. 環境変数チェック
+          fid = os.environ.get('GDRIVE_FOLDER_ID', '').strip()
           fname = 'minervini_final_results.csv'
           if not os.path.exists(fname):
-              print("ファイルが生成されていません。")
+              print(f"File {fname} not found. Skipping Drive upload.")
               exit(0)
 
-          info = json.loads(os.environ['GDRIVE_JSON'])
-          creds = service_account.Credentials.from_service_account_info(info, scopes=['https://www.googleapis.com/auth/drive'])
-          service = build('drive', 'v3', credentials=creds)
-
+          # 2. 認証設定
           try:
-              # アップロード。 parents はリスト形式で渡す
+              info = json.loads(os.environ['GDRIVE_JSON'])
+              creds = service_account.Credentials.from_service_account_info(
+                  info, 
+                  scopes=['https://www.googleapis.com/auth/drive']
+              )
+              service = build('drive', 'v3', credentials=creds)
+
+              # 3. アップロード実行 (parentsは必ずリスト形式 [id] で指定)
               file_metadata = {'name': fname, 'parents': [fid]}
               media = MediaFileUpload(fname, mimetype='text/csv', resumable=True)
               file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-              print(f"Drive転送成功 ID: {file.get('id')}")
+              print(f"Drive upload success! File ID: {file.get('id')}")
           except Exception as e:
-              print(f"Driveエラー (Artifactsを確認してください): {e}")
+              print(f"Google Drive Upload Failed: {e}")
           EOF
 
-      - name: Save to GitHub Artifacts (Safe Backup)
-        if: always() # Driveが失敗しても必ずGitHub上に残す
+      - name: Save to GitHub Artifacts (Backup)
+        # Drive転送が404などで失敗しても、GitHub上にファイルを残す「命綱」
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: stock-results-${{ github.run_id }}
           path: minervini_final_results.csv
+          retention-days: 7 # 7日間保存
