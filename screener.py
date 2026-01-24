@@ -6,8 +6,8 @@ import time
 import os
 
 # --- 設定エリア ---
-USER_AGENT = 'Stock-Screener/GitHub-Strict (contact: your-email@example.com)'
-LOCAL_SAVE_PATH = 'minervini_final_results.csv' # ローカルに一時保存
+USER_AGENT = 'Stock-Screener/Debug-v1 (contact: your-email@example.com)'
+LOCAL_SAVE_PATH = 'minervini_final_results.csv'
 # ----------------
 
 def get_full_universe():
@@ -18,7 +18,7 @@ def get_full_universe():
         res.raise_for_status()
         return [item['ticker'].replace('-', '.') for item in res.json().values()]
     except Exception as e:
-        print(f"Ticker list error: {e}")
+        print(f"【エラー】ティッカーリスト取得失敗: {e}")
         return []
 
 def get_market_health_summary():
@@ -30,26 +30,35 @@ def get_market_health_summary():
         sma50 = c.rolling(50).mean().iloc[-1]
         dist_days = 0
         for i in range(1, 26):
-            if c.iloc[-i] < c.iloc[-i-1] and v.iloc[-i] > v.iloc[-i-1]: 
-                dist_days += 1
-        status = "強気 (Perfect)" if c.iloc[-1] > sma50 and dist_days < 5 else (
-                 "警戒 (Fair)" if c.iloc[-1] > sma50 else "弱気 (Fail)")
-        return f"--- 市場環境判定: {status} [売り抜け日: {dist_days}日] ---"
-    except: 
-        return "--- 市場環境判定: 取得エラー ---"
+            if c.iloc[-i] < c.iloc[-i-1] and v.iloc[-i] > v.iloc[-i-1]: dist_days += 1
+        return f"--- 市場環境: {c.iloc[-1] > sma50} (Dist: {dist_days}日) ---"
+    except Exception as e:
+        return f"--- 市場環境判定エラー: {e} ---"
 
-def analyze_ticker_master_enriched(ticker):
+def analyze_ticker_debug(ticker):
+    """どこで脱落したかをログに出力するデバッグ版"""
     try:
         stock = yf.Ticker(ticker)
-        # 1. 時価総額チェック
+        
+        # 1. info取得チェック
         info = stock.info
+        if not info or 'marketCap' not in info:
+            # ログが埋まるのを防ぐため、特定の銘柄（例: NVDA）の時だけ詳細を表示
+            if ticker in ["NVDA", "AAPL", "MSFT", "TSLA"]:
+                print(f"【デバッグ】{ticker}: info取得失敗（Yahooからブロックされている可能性があります）")
+            return None
+
         mkt_cap = info.get('marketCap', 0)
         if mkt_cap == 0 or mkt_cap > 100 * 1e9: 
             return None
 
-        # 2. データ取得
+        # 2. 株価データ取得チェック
         df = stock.history(period="1y", interval="1d", auto_adjust=True)
-        if len(df) < 200: return None
+        if df.empty or len(df) < 200:
+            if ticker in ["NVDA", "AAPL", "MSFT", "TSLA"]:
+                print(f"【デバッグ】{ticker}: 株価データ取得失敗（データが空です）")
+            return None
+
         if isinstance(df.columns, pd.MultiIndex): 
             df.columns = df.columns.get_level_values(0)
 
@@ -58,7 +67,7 @@ def analyze_ticker_master_enriched(ticker):
         ema10, vol_sma50 = c.ewm(span=10, adjust=False).mean(), v.rolling(50).mean()
 
         tags = []
-        # A. VCP_Original
+        # --- テクニカル判定（ロジックは不変） ---
         is_stage2_vcp = (c.iloc[-1] > sma20.iloc[-1] > sma50.iloc[-1] > sma200.iloc[-1])
         sma200_rising = (sma200.iloc[-20:].diff().dropna() > 0).all()
         vol_dry_up = (v.iloc[-3:] < vol_sma50.iloc[-3:]).all()
@@ -67,50 +76,46 @@ def analyze_ticker_master_enriched(ticker):
         if is_stage2_vcp and sma200_rising and vol_dry_up and bbw_min:
             tags.append("VCP_Original")
 
-        # B. 短期トレンド
         if (c.iloc[-1] > sma20.iloc[-1] > sma50.iloc[-1]):
-            # パワープレイ
             gain_8w = (c.iloc[-1] / c.iloc[-40]) >= 1.70 if len(c) >= 40 else False
             on_ema10 = (c.iloc[-3:] > ema10.iloc[-3:]).all()
             max_40 = h.iloc[-40:].max()
             if gain_8w and on_ema10 and (c.iloc[-1] / max_40 >= 0.75):
                 tags.append("PowerPlay(70%+)")
-            # ハイ・ベース
             gain_2w = 1.10 <= (c.iloc[-1] / c.iloc[-10]) <= 1.70 if len(c) >= 10 else False
             if gain_2w and (c.iloc[-1] / h.iloc[-10:].max() >= 0.90) and ((h.iloc[-3:] - l.iloc[-3:]).mean() < (h - l).rolling(10).mean().iloc[-1]):
                 tags.append("High-Base")
 
         if tags:
             rev_g, eps_g = info.get('revenueGrowth'), info.get('earningsGrowth')
-            if rev_g is None or eps_g is None: f_label = "【要確認】データ不足"
-            elif rev_g >= 0.25 and eps_g >= 0.25: f_label = "【超優秀】基準クリア"
-            elif rev_g >= 0.25 or eps_g >= 0.25 or rev_g >= 0.50: f_label = "【良好】一部成長"
-            else: f_label = "【不足】低成長"
-
             return {
                 "銘柄": ticker, "価格": round(c.iloc[-1], 2), "パターン": ", ".join(tags),
-                "成長性判定": f_label,
-                "売上成長(%)": round(rev_g * 100, 1) if rev_g else "不明",
-                "EPS成長(%)": round(eps_g * 100, 1) if eps_g else "不明",
-                "時価総額(B)": round(mkt_cap/1e9, 2)
+                "成長性判定": "判定済み", "売上成長(%)": round(rev_g * 100, 1) if rev_g else "不明",
+                "EPS成長(%)": round(eps_g * 100, 1) if eps_g else "不明", "時価総額(B)": round(mkt_cap/1e9, 2)
             }
-    except: pass
+    except Exception as e:
+        if ticker in ["NVDA", "AAPL", "MSFT", "TSLA"]:
+            print(f"【デバッグ】{ticker}でエラー発生: {e}")
     return None
 
 if __name__ == "__main__":
-    print(f"\n{get_market_health_summary()}\n")
+    print(get_market_health_summary())
     universe = get_full_universe()
     results = []
-    print(f"スキャン開始: {len(universe)}銘柄")
+    print(f"全 {len(universe)} 銘柄のスキャン...")
+    
+    # 最初の数件でデータ取得ができているかテスト
+    for ticker in ["AAPL", "NVDA", "MSFT", "TSLA"]:
+        analyze_ticker_debug(ticker)
+
     for i, ticker in enumerate(universe):
-        res = analyze_ticker_master_enriched(ticker)
+        res = analyze_ticker_debug(ticker)
         if res:
             results.append(res)
-            print(f"的中: {res['銘柄']} - {res['パターン']} ({res['成長性判定']})")
+            print(f"【的中】 {res['銘柄']}")
         if i % 100 == 0: print(f"Progress: {i}/{len(universe)}...")
-        time.sleep(0.12) # GitHub ActionsのIP制限対策
+        time.sleep(0.15) # ブロック回避のため少し長めに待機
 
-    if results:
-        df = pd.DataFrame(results)
-        df.to_csv(LOCAL_SAVE_PATH, index=False, encoding='utf-8-sig')
-        print(f"\n完了。{len(results)}件検出。")
+    df = pd.DataFrame(results if results else [{"結果": "的中なし"}])
+    df.to_csv(LOCAL_SAVE_PATH, index=False, encoding='utf-8-sig')
+    print(f"ファイル作成完了: {len(results)}件")
