@@ -1,13 +1,14 @@
 name: Stock Screener Full Auto
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # スマホやブラウザから手動で実行するためのボタン
 
 jobs:
   run-screener:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout code
+        uses: actions/checkout@v3
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -24,6 +25,7 @@ jobs:
       - name: Upload to Google Drive
         env:
           GDRIVE_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
         run: |
           python - <<EOF
           import os, json
@@ -31,22 +33,24 @@ jobs:
           from googleapiclient.discovery import build
           from googleapiclient.http import MediaFileUpload
 
-          # 秘密情報の読み込み
+          # 秘密情報の読み込み（改行が含まれていてもjson.loadsが適切に処理します）
           info = json.loads(os.environ['GDRIVE_JSON'])
           creds = service_account.Credentials.from_service_account_info(info, scopes=['https://www.googleapis.com/auth/drive'])
           service = build('drive', 'v3', credentials=creds)
 
-          # Google Drive上の 'Minervini' フォルダを検索
-          query = "name = 'Minervini' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
-          results = service.files().list(q=query, fields="files(id)").execute()
-          files = results.get('files', [])
-          if not files:
-              raise Exception("Minerviniフォルダが見つかりません。共有設定を確認してください。")
-          folder_id = files[0].get('id')
+          # 指定されたフォルダID（1n8b35TYpli2L1ZzXV9_HAe0pQPqHZidJ）を直接使用
+          folder_id = os.environ['GDRIVE_FOLDER_ID']
+          file_name = 'minervini_final_results.csv'
 
-          # ファイルをアップロード（常に新しいファイルとして作成）
-          file_metadata = {'name': 'minervini_final_results.csv', 'parents': [folder_id]}
-          media = MediaFileUpload('minervini_final_results.csv', mimetype='text/csv')
-          service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-          print("Google Driveへの転送が成功しました。")
+          # アップロード設定
+          file_metadata = {'name': file_name, 'parents': [folder_id]}
+          media = MediaFileUpload(file_name, mimetype='text/csv')
+          
+          # 実行
+          try:
+              file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+              print(f"転送成功！ Google Drive上のFile ID: {file.get('id')}")
+          except Exception as e:
+              print(f"アップロード中にエラーが発生しました: {e}")
+              raise e
           EOF
