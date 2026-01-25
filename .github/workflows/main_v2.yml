@@ -1,0 +1,34 @@
+name: Minervini Screener V2 (Strict)
+
+on:
+  schedule:
+    # 日本時間 月〜金 の 朝 07:00 に実行 (UTC 22:00)
+    - cron: '0 22 * * 0-4'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install yfinance pandas numpy requests google-api-python-client google-auth-httplib2 google-auth-oauthlib
+
+      - name: Run Screener V2
+        env:
+          CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+        # 新しいファイル名 screener_v2.py を実行
+        run: python screener_v2.py
