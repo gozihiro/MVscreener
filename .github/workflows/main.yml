@@ -2,14 +2,16 @@ name: Minervini Growth Stock Screener
 
 on:
   schedule:
-    # 日本時間 月〜金 の 13:00頃に実行（UTC 04:00）
-    - cron: '0 4 * * 1-5'
+    # 日本時間 月〜金 の 朝 07:00 に実行
+    # 計算: 07:00 JST - 9時間 = 前日 22:00 UTC
+    # 日(0)〜木(4)の22時に実行することで、日本時間の月〜金に該当させます
+    - cron: '0 22 * * 0-4'
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    # 5.5時間の長丁場に対応するため、タイムアウトを長めに設定（最大360分）
+    # 5.5時間の長丁場に対応するため、タイムアウトを360分に設定
     timeout-minutes: 360
 
     steps:
@@ -27,10 +29,10 @@ jobs:
 
       - name: Run Screener and Upload
         env:
-          # GitHub Secrets に登録した鍵を Python に渡す
+          # GitHub Secrets から OAuth 認証情報を渡す
           CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
           CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
           REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
-        # スクリプト内でアップロードまで完結するため、この1ステップでOK
-        run: python Screener.py
+        # ファイル名は小文字の screener.py を使用
+        run: python screener.py
