@@ -94,13 +94,31 @@ def get_market_health_summary():
         return "エラー", 0, 0
 
 def get_full_universe():
-    """SECから全銘柄リストを取得"""
-    log(">> ステップ2: 銘柄リストを取得中...")
-    url = "https://www.sec.gov/files/company_tickers.json"
+    """SECから主要取引所（Nasdaq, NYSE, NYSE American）の銘柄リストのみを取得"""
+    log(">> ステップ2: 主要市場（Nasdaq/NYSE）の銘柄リストを取得中...")
+    
+    # 取引所情報が含まれる拡張版のファイルを使用します
+    url = "https://www.sec.gov/files/company_tickers_exchange.json"
     headers = {'User-Agent': SEC_USER_AGENT, 'Host': 'www.sec.gov'}
+    
     try:
         res = requests.get(url, headers=headers, timeout=25)
-        return [item['ticker'].replace('-', '.') for item in res.json().values()]
+        json_data = res.json()
+        
+        # json_data['fields'] は ["cik", "name", "ticker", "exchange"] の順
+        # json_data['data'] は [[cik, name, ticker, exchange], ...] のリスト形式
+        
+        # 監視対象を主要な取引所に限定（OTCやBATSなどのマイナー市場を除外）
+        allowed_exchanges = ['Nasdaq', 'NYSE', 'NYSE American']
+        
+        tickers = [
+            row[2].replace('-', '.') # index 2 が ticker
+            for row in json_data['data'] 
+            if row[3] in allowed_exchanges # index 3 が exchange
+        ]
+        
+        log(f">> ✅ 主要市場から {len(tickers)} 銘柄を特定（OTC等を除外完了）。")
+        return tickers
     except Exception as e:
         log(f"【エラー】リスト取得失敗: {e}")
         return []
