@@ -1,7 +1,7 @@
-name: Drive Connection Test
+name: OAuth Drive Connection Test
 
 on:
-  workflow_dispatch: # 手動で「Run workflow」ボタンを押して実行
+  workflow_dispatch:
 
 jobs:
   test:
@@ -14,8 +14,10 @@ jobs:
           python-version: '3.11'
       - name: Install dependencies
         run: pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib
-      - name: Run Debug Script
+      - name: Run OAuth Debug Script
         env:
-          GDRIVE_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT }}
+          CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
         run: python test_drive.py
