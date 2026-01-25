@@ -149,6 +149,10 @@ def run_screener():
                         mkt_cap = info.get('marketCap', 0)
                         if 0 < mkt_cap <= 100 * 1e9:
                             rev_g, eps_g = info.get('revenueGrowth'), info.get('earningsGrowth')
+                            # 営業利益成長の代替(ebitdaGrowth)と営業CFを取得
+                            ebitda_g = info.get('ebitdaGrowth')
+                            ocf = info.get('operatingCashflow')
+                            
                             if rev_g is None or eps_g is None: f_label = "【要確認】不足"
                             elif rev_g >= 0.25 and eps_g >= 0.25: f_label = "【超優秀】クリア"
                             elif rev_g >= 0.25 or eps_g >= 0.25 or rev_g >= 0.50: f_label = "【良好】一部"
@@ -156,7 +160,11 @@ def run_screener():
 
                             results.append({
                                 "銘柄": ticker, "価格": round(c.iloc[-1], 2), "パターン": ", ".join(tags),
-                                "成長性判定": f_label, "売上成長(%)": round(rev_g*100, 1) if rev_g else "不明",
+                                "成長性判定": f_label, 
+                                "売上成長(%)": round(rev_g*100, 1) if rev_g else "不明",
+                                "営業利益成長(EBITDA)%": round(ebitda_g*100, 1) if ebitda_g else "不明",
+                                "純利益成長(%)": round(eps_g*100, 1) if eps_g else "不明",
+                                "営業CF(M)": round(ocf/1e6, 2) if ocf else "不明",
                                 "時価総額(B)": round(mkt_cap/1e9, 2)
                             })
                             log(f"      > 【的中】: {ticker}")
