@@ -5,6 +5,12 @@ import requests
 import time
 import random
 import sys
+# --- Added for OAuth 2.0 Drive Upload ---
+import os
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+# ----------------------------------------
 
 # --- 設定エリア（ロジック不変・待機時間を完走用に最適化） ---
 SEC_USER_AGENT = 'Minervini-Bot/Git-Full-v2 (contact: gozihiro17@gmail.com)'
@@ -17,6 +23,33 @@ BATCH_SLEEP_BASE = 85
 def log(msg):
     """GitHubのログ画面に即座に出力する（バッファリング回避）"""
     print(msg, flush=True)
+
+def upload_to_drive(file_path):
+    """OAuth 2.0を使用してGoogle Driveへアップロード"""
+    client_id = os.environ.get('CLIENT_ID')
+    client_secret = os.environ.get('CLIENT_SECRET')
+    refresh_token = os.environ.get('REFRESH_TOKEN')
+    folder_id = os.environ.get('GDRIVE_FOLDER_ID')
+
+    if not all([client_id, client_secret, refresh_token, folder_id]):
+        log("【警告】Drive設定用の環境変数が不足しています。")
+        return
+
+    try:
+        creds = Credentials(
+            token=None,
+            refresh_token=refresh_token,
+            client_id=client_id,
+            client_secret=client_secret,
+            token_uri="https://oauth2.googleapis.com/token"
+        )
+        service = build('drive', 'v3', credentials=creds)
+        file_metadata = {'name': file_path, 'parents': [folder_id]}
+        media = MediaFileUpload(file_path, mimetype='text/csv', resumable=True)
+        service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+        log(f">> ✅ Google Driveアップロード成功")
+    except Exception as e:
+        log(f">> ❌ Driveアップロード失敗: {e}")
 
 def get_market_health_summary():
     """【維持】市場環境判定：S&P500のSMA50と売り抜け日"""
@@ -130,6 +163,9 @@ def run_screener():
     df_final = pd.DataFrame(results if results else [{"結果": "的中なし"}])
     df_final.to_csv(LOCAL_SAVE_PATH, index=False, encoding='utf-8-sig')
     log(f"=== 全工程完了。最終的中数: {len(results)} ===")
+    
+    # --- OAuth 2.0 アップロード呼び出し ---
+    upload_to_drive(LOCAL_SAVE_PATH)
 
 if __name__ == "__main__":
     run_screener()
