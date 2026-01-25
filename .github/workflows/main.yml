@@ -1,63 +1,7 @@
-name: Minervini Screener Auto
-
-on:
-  workflow_dispatch:
-  schedule:
-    - cron: '0 23 * * 1-5' # 平日日本時間 朝8時
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          pip install yfinance pandas numpy requests google-api-python-client google-auth-httplib2 google-auth-oauthlib curl_cffi
-
-      - name: Run Screener
-        # 5時間以上の長時間実行になるため、タイムアウトを回避する設定
-        run: python screener.py
-
-      - name: Upload to Google Drive
-        if: always() # 解析が途中で止まっても、CSVがあればアップロード
+- name: Run Screener
         env:
-          GDRIVE_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT }}
+          CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
-        run: |
-          python - <<EOF
-          import os, json
-          from google.oauth2 import service_account
-          from googleapiclient.discovery import build
-          from googleapiclient.http import MediaFileUpload
-
-          fid = os.environ.get('GDRIVE_FOLDER_ID', '').strip()
-          fname = 'minervini_final_results.csv'
-          if not os.path.exists(fname):
-              print("CSVが見つかりません。")
-              exit(0)
-
-          info = json.loads(os.environ['GDRIVE_JSON'])
-          creds = service_account.Credentials.from_service_account_info(info, scopes=['https://www.googleapis.com/auth/drive'])
-          service = build('drive', 'v3', credentials=creds)
-
-          try:
-              file_metadata = {'name': fname, 'parents': [fid]}
-              media = MediaFileUpload(fname, mimetype='text/csv', resumable=True)
-              file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-              print(f"Drive転送成功 ID: {file.get('id')}")
-          except Exception as e:
-              print(f"Driveエラー: {e}")
-          EOF
-
-      - name: Save to GitHub Artifacts (Safe Backup)
-        if: always() # Driveが失敗しても「絶対」にGitHub上に残す
-        uses: actions/upload-artifact@v4
-        with:
-          name: stock-results-${{ github.run_id }}
-          path: minervini_final_results.csv
+        run: python Screener.py
