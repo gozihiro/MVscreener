@@ -1,54 +1,20 @@
-import os
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
-
-def test_oauth_upload():
-    print("--- OAuth 2.0 接続テスト開始 ---")
-    
-    # GitHub Secretsから環境変数を取得
-    client_id = os.environ.get('CLIENT_ID')
-    client_secret = os.environ.get('CLIENT_SECRET')
-    refresh_token = os.environ.get('REFRESH_TOKEN')
-    folder_id = os.environ.get('GDRIVE_FOLDER_ID')
-
-    if not all([client_id, client_secret, refresh_token, folder_id]):
-        print("[ERROR] 必要な環境変数が不足しています。Secretsの設定を確認してください。")
-        return
-
-    # 1. 佐藤さんの代理人として認証情報を構成
-    creds = Credentials(
-        token=None,
-        refresh_token=refresh_token,
-        client_id=client_id,
-        client_secret=client_secret,
-        token_uri="https://oauth2.googleapis.com/token"
-    )
-
-    try:
-        service = build('drive', 'v3', credentials=creds)
-        
-        # 2. テストファイルの作成
-        test_file = 'test_oauth_upload.txt'
-        with open(test_file, 'w') as f:
-            f.write("OAuth 2.0 Connection Test Successful")
-        print(f"[OK] テストファイル '{test_file}' を作成しました。")
-
-        # 3. フォルダへのアクセス確認
-        print(f"フォルダID '{folder_id}' へのアクセスを試行中...")
-        folder_meta = service.files().get(fileId=folder_id, fields='name').execute()
-        print(f"[OK] フォルダを確認しました。フォルダ名: {folder_meta.get('name')}")
-
-        # 4. アップロード実行
-        file_metadata = {'name': test_file, 'parents': [folder_id]}
-        media = MediaFileUpload(test_file, mimetype='text/plain', resumable=True)
-        uploaded_file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-        
-        print(f"[SUCCESS] アップロード完了！ File ID: {uploaded_file.get('id')}")
-        print("Google Drive上で佐藤さんのアカウントとしてファイルが表示されているか確認してください。")
-
-    except Exception as e:
-        print(f"[ERROR] 予期せぬエラーが発生しました: {e}")
-
-if __name__ == "__main__":
-    test_oauth_upload()
+name: OAuth Drive Connection Test
+on: workflow_dispatch
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib
+      - name: Run Test
+        env:
+          CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+        run: python test_drive.py
