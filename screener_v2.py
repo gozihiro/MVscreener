@@ -15,9 +15,9 @@ from googleapiclient.http import MediaFileUpload
 # --- 設定エリア（ロジック不変・待機時間を完走用に最適化） ---
 SEC_USER_AGENT = 'Minervini-Bot/Git-Full-v2 (contact: gozihiro17@gmail.com)'
 LOCAL_SAVE_PATH = 'minervini_final_results.csv'
-BATCH_SIZE = 50      
+BATCH_SIZE = 50
 # 1万件（200回通信）を5.5時間で終えるための待機秒数（約90秒）
-BATCH_SLEEP_BASE = 85 
+BATCH_SLEEP_BASE = 85
 # -----------------------------------------------------
 
 def log(msg):
@@ -104,9 +104,6 @@ def get_full_universe():
     try:
         res = requests.get(url, headers=headers, timeout=25)
         json_data = res.json()
-        
-        # json_data['fields'] は ["cik", "name", "ticker", "exchange"] の順
-        # json_data['data'] は [[cik, name, ticker, exchange], ...] のリスト形式
         
         # 監視対象を主要な取引所に限定（OTCやBATSなどのマイナー市場を除外）
         allowed_exchanges = ['Nasdaq', 'NYSE', 'NYSE American']
@@ -202,9 +199,28 @@ def run_screener():
                         mkt_cap = info.get('marketCap', 0)
                         if 0 < mkt_cap <= 100 * 1e9:
                             rev_g, eps_g = info.get('revenueGrowth'), info.get('earningsGrowth')
-                            # 営業利益成長の代替(ebitdaGrowth)と営業CFを取得
+                            
+                            # --- EBITDA成長率と営業CFの取得ロジック強化 (ここを差し替え) ---
                             ebitda_g = info.get('ebitdaGrowth')
+                            if ebitda_g is None:
+                                try:
+                                    qf = stock.quarterly_financials
+                                    if 'EBITDA' in qf.index and qf.shape[1] >= 5:
+                                        cur, prev = qf.loc['EBITDA'].iloc[0], qf.loc['EBITDA'].iloc[4]
+                                        if prev and prev != 0: ebitda_g = (cur - prev) / abs(prev)
+                                    elif 'Operating Income' in qf.index and qf.shape[1] >= 5:
+                                        cur, prev = qf.loc['Operating Income'].iloc[0], qf.loc['Operating Income'].iloc[4]
+                                        if prev and prev != 0: ebitda_g = (cur - prev) / abs(prev)
+                                except: pass
+
                             ocf = info.get('operatingCashflow')
+                            if ocf is None:
+                                try:
+                                    qf = stock.quarterly_financials
+                                    if 'Operating Cash Flow' in qf.index:
+                                        ocf = qf.loc['Operating Cash Flow'].iloc[0] * 4 # 年換算近似
+                                except: pass
+                            # --------------------------------------------------------
                             
                             if rev_g is None or eps_g is None: f_label = "【要確認】不足"
                             elif rev_g >= 0.25 and eps_g >= 0.25: f_label = "【超優秀】クリア"
