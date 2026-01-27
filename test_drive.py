@@ -1,38 +1,46 @@
-import os
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+import yfinance as yf
+import pandas as pd
 
-def test_oauth_upload():
-    print("--- OAuth 2.0 接続テスト開始 ---")
-    
-    creds = Credentials(
-        token=None,
-        refresh_token=os.environ.get('REFRESH_TOKEN'),
-        client_id=os.environ.get('CLIENT_ID'),
-        client_secret=os.environ.get('CLIENT_SECRET'),
-        token_uri="https://oauth2.googleapis.com/token"
-    )
+def test_financial_data(ticker_symbol):
+    print(f"=== Testing Data for: {ticker_symbol} ===")
+    tk = yf.Ticker(ticker_symbol)
 
-    try:
-        service = build('drive', 'v3', credentials=creds)
-        folder_id = os.environ.get('GDRIVE_FOLDER_ID')
+    # 1. .info からの取得 (従来の試行方法)
+    info = tk.info
+    print(f"[Method 1: .info]")
+    print(f"  - EBITDA: {info.get('ebitda', 'N/A')}")
+    print(f"  - Operating Margins: {info.get('operatingMargins', 'N/A')}")
 
-        # 1. テストファイル作成
-        test_file = 'oauth_success_test.txt'
-        with open(test_file, 'w') as f:
-            f.write("Google One storage access successful via OAuth 2.0!")
+    # 2. .financials (通期損益計算書) からの取得
+    print(f"\n[Method 2: .financials (Annual)]")
+    financials = tk.financials
+    if not financials.empty:
+        # EBITDA または Operating Income の行を探す
+        target_rows = ['EBITDA', 'Operating Income', 'Ebit']
+        for row in target_rows:
+            if row in financials.index:
+                val = financials.loc[row].iloc[0] # 最新年度
+                print(f"  - {row}: {val}")
+            else:
+                print(f"  - {row}: Not Found in index")
+    else:
+        print("  - Annual Financials is empty.")
 
-        # 2. アップロード実行
-        file_metadata = {'name': test_file, 'parents': [folder_id]}
-        media = MediaFileUpload(test_file, mimetype='text/plain')
-        file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-        
-        print(f"✅ アップロード大成功！ File ID: {file.get('id')}")
-        print("Google ドライブのフォルダを確認してください。")
+    # 3. .quarterly_financials (四半期損益計算書) からの取得
+    print(f"\n[Method 3: .quarterly_financials (Quarterly)]")
+    q_financials = tk.quarterly_financials
+    if not q_financials.empty:
+        if 'EBITDA' in q_financials.index:
+            # 最新の4四半期分を表示
+            print("  - Recent 4 Quarters EBITDA:")
+            print(q_financials.loc['EBITDA'].head(4))
+        else:
+            print("  - EBITDA not found in quarterly index.")
+    else:
+        print("  - Quarterly Financials is empty.")
 
-    except Exception as e:
-        print(f"❌ エラー発生: {e}")
-
-if __name__ == "__main__":
-    test_oauth_upload()
+# テスト実行（データが豊富そうな大型銘柄で試すのが確実です）
+test_symbols = ['AAPL', 'NVDA', 'VRT']
+for symbol in test_symbols:
+    test_financial_data(symbol)
+    print("-" * 30)
