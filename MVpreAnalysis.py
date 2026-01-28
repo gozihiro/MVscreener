@@ -14,7 +14,10 @@ def get_env(name):
 CLIENT_ID = get_env('CLIENT_ID')
 CLIENT_SECRET = get_env('CLIENT_SECRET')
 REFRESH_TOKEN = get_env('REFRESH_TOKEN')
-PARENT_FOLDER_ID = get_env('GDRIVE_FOLDER_ID')
+# ソースファイル（minervini_final_results.csv）があるフォルダ
+SOURCE_FOLDER_ID = get_env('GDRIVE_FOLDER_ID')
+# 分析結果を保存する Summary フォルダのID（直接指定）
+SUMMARY_FOLDER_ID = get_env('SUMMARY_FOLDER_ID')
 
 # 解析対象の全項目
 REQUIRED_COLS = [
@@ -25,22 +28,6 @@ REQUIRED_COLS = [
 def get_drive_service():
     creds = Credentials(token=None, refresh_token=REFRESH_TOKEN, client_id=CLIENT_ID, client_secret=CLIENT_SECRET, token_uri="https://oauth2.googleapis.com/token")
     return build('drive', 'v3', credentials=creds)
-
-def get_existing_summary_folder(service):
-    """【重要】Summaryフォルダを検索し、存在しなければ停止する（新規作成はしない）"""
-    # 名前、親ID、mimeTypeで厳密に検索
-    q = f"name = 'Summary' and '{PARENT_FOLDER_ID}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
-    res = service.files().list(q=q, fields="files(id, name)").execute()
-    folders = res.get('files', [])
-    
-    if folders:
-        print(f"✅ 既存の Summary フォルダを特定しました (ID: {folders[0]['id']})")
-        return folders[0]['id']
-    else:
-        # フォルダが見つからない場合は、勝手に作らずにエラーを出す
-        print(f"❌ エラー: 指定された親フォルダ ({PARENT_FOLDER_ID}) 内に 'Summary' フォルダが見つかりません。")
-        print("Google Drive上で手動で 'Summary' フォルダを作成してから再実行してください。")
-        sys.exit(1)
 
 def get_target_time_ranges():
     jst = timezone(timedelta(hours=9))
@@ -61,10 +48,10 @@ def fetch_weekly_data():
     weekly_dfs = []
     market_metadatas = []
 
-    print("=== Phase 1: データ収集と市場環境解析 (JST) ===")
+    print(f"=== Phase 1: データ収集 (Source: {SOURCE_FOLDER_ID}) ===")
     for start, end in ranges:
         market_date = (start - timedelta(days=1)).strftime('%m/%d')
-        query = (f"'{PARENT_FOLDER_ID}' in parents and name = 'minervini_final_results.csv' "
+        query = (f"'{SOURCE_FOLDER_ID}' in parents and name = 'minervini_final_results.csv' "
                  f"and createdTime >= '{start.isoformat()}' and createdTime <= '{end.isoformat()}' "
                  f"and trashed = false")
         
@@ -82,11 +69,11 @@ def fetch_weekly_data():
             fh.seek(0)
             raw_data = fh.read().decode('utf-8-sig').splitlines()
             
-            # 市場環境データ（1行目）
+            # 1行目の市場環境データ
             metadata_line = raw_data[0] if raw_data else "No Metadata"
             market_metadatas.append({'Date': market_date, 'Metadata': metadata_line})
             
-            # 銘柄データ（2行目以降）
+            # 銘柄データ
             df = pd.read_csv(io.StringIO("\n".join(raw_data[1:])))
             for col in REQUIRED_COLS:
                 if col not in df.columns: df[col] = "不明"
@@ -103,11 +90,10 @@ def fetch_weekly_data():
 def analyze_detailed_trend(dfs, metadatas):
     if not dfs: return None
     
-    print("=== Phase 2: 市場・銘柄トレンド分析 ===")
+    print("=== Phase 2: トレンド集計 ===")
     all_raw = pd.concat(dfs, ignore_index=True)
     trend_df = all_raw.groupby('銘柄').size().reset_index(name='出現回数')
     
-    # 市場環境行
     market_row = {'銘柄': '### MARKET_ENVIRONMENT ###', '出現回数': '-'}
 
     for df, meta in zip(dfs, metadatas):
@@ -119,7 +105,7 @@ def analyze_detailed_trend(dfs, metadatas):
 
     result = pd.concat([pd.DataFrame([market_row]), trend_df], ignore_index=True)
 
-    # 出現回数と最新日の売上成長でソート
+    # 最新日の売上成長でソート
     latest_date = dfs[-1]['Date']
     sort_col = f'売上成長(%)_{latest_date}'
     
@@ -132,28 +118,28 @@ def analyze_detailed_trend(dfs, metadatas):
     return result.fillna('－')
 
 def upload_result_to_drive(file_path):
+    """【改善】指定されたIDのSummaryフォルダへ直接保存"""
     service = get_drive_service()
-    # 既存フォルダのみを取得（なければここで止まる）
-    summary_folder_id = get_existing_summary_folder(service)
     
     file_name = f"weekly_detailed_trend_{datetime.now().strftime('%Y%m%d')}.csv"
-    file_metadata = {'name': file_name, 'parents': [summary_folder_id]}
+    file_metadata = {'name': file_name, 'parents': [SUMMARY_FOLDER_ID]}
     media = MediaFileUpload(file_path, mimetype='text/csv')
     
-    query = f"'{summary_folder_id}' in parents and name = '{file_name}' and trashed = false"
+    # Summaryフォルダ内に同名ファイルがあるかだけを確認
+    query = f"'{SUMMARY_FOLDER_ID}' in parents and name = '{file_name}' and trashed = false"
     res = service.files().list(q=query).execute()
     files = res.get('files', [])
 
     if files:
         service.files().update(fileId=files[0]['id'], media_body=media).execute()
-        print(f"✅ Summary内の既存ファイルを更新しました: {file_name}")
+        print(f"✅ Summary内の既存ファイルを更新しました (ID: {SUMMARY_FOLDER_ID})")
     else:
         service.files().create(body=file_metadata, media_body=media).execute()
-        print(f"✅ Summary内に新規ファイルを保存しました: {file_name}")
+        print(f"✅ Summary内に新規ファイルを保存しました (ID: {SUMMARY_FOLDER_ID})")
 
 if __name__ == "__main__":
-    if not all([CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN, PARENT_FOLDER_ID]):
-        print("❌ 認証情報が不足しています。GitHub Secretsを確認してください。")
+    if not all([CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN, SOURCE_FOLDER_ID, SUMMARY_FOLDER_ID]):
+        print("❌ エラー: 認証情報または SUMMARY_FOLDER_ID が不足しています。")
         sys.exit(1)
 
     weekly_data, metadatas = fetch_weekly_data()
