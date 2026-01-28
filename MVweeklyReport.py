@@ -2,7 +2,6 @@ import os
 import sys
 import pandas as pd
 import plotly.graph_objects as go
-import plotly.express as px
 from plotly.subplots import make_subplots
 import io
 import re
@@ -26,8 +25,7 @@ def fetch_latest_summary():
     query = f"'{SUMMARY_FOLDER_ID}' in parents and name contains 'weekly_detailed_trend' and trashed = false"
     res = service.files().list(q=query, fields="files(id, name)", orderBy="createdTime desc").execute()
     files = res.get('files', [])
-    if not files:
-        sys.exit(1)
+    if not files: sys.exit(1)
     req = service.files().get_media(fileId=files[0]['id'])
     fh = io.BytesIO()
     downloader = MediaIoBaseDownload(fh, req)
@@ -36,114 +34,164 @@ def fetch_latest_summary():
     fh.seek(0)
     return pd.read_csv(fh), files[0]['name']
 
-def create_rich_report(df):
-    dates = sorted(list(set([c.split('_')[-1] for c in df.columns if '価格_' in c and '/' in c])))
+def create_intelligence_report(df):
+    # 日付列の抽出
+    date_cols = [c for c in df.columns if '価格_' in c]
+    dates = sorted([c.split('_')[-1] for c in date_cols])
     latest_date = dates[-1]
-    
-    # --- 1. 市場環境分析 (Elder's View) ---
+
+    # --- 1. 市場環境：メタデータの時系列解析 ---
     market_row = df[df['銘柄'] == '### MARKET_ENVIRONMENT ###'].iloc[0]
-    ad_list, dist_list = [], []
+    market_history = []
     for d in dates:
         meta = str(market_row.get(f'価格_{d}', ""))
         ad = re.search(r'A/D比:\s*([\d\.]+)', meta)
-        dist = re.search(r'売り抜け日:\s*(\d+)', meta)
-        ad_list.append(float(ad.group(1)) if ad else 1.0)
-        dist_list.append(int(dist.group(1)) if dist else 0)
-    
-    current_ad = ad_list[-1]
-    ad_trend = "改善" if len(ad_list) > 1 and ad_list[-1] > ad_list[-2] else "停滞"
-    market_status = "【警戒】" if dist_list[-1] >= 4 else "【健全】" if current_ad > 1.1 else "【中立】"
+        dist = re.search(r'売り抜け:\s*(\d+)', meta)
+        low_days = re.search(r'安値から:\s*(\d+)', meta)
+        market_history.append({
+            'date': d,
+            'ad': float(ad.group(1)) if ad else 1.0,
+            'dist': int(dist.group(1)) if dist else 0,
+            'low_days': int(low_days.group(1)) if low_days else 0,
+            'raw': meta
+        })
 
-    # --- 2. 注目銘柄ランキング選出 (Minervini's View) ---
+    # --- 2. 有望銘柄の動的スコアリング ---
     stocks = df[df['銘柄'] != '### MARKET_ENVIRONMENT ###'].copy()
-    for d in dates: # 数値化
-        stocks[f'価格_{d}'] = pd.to_numeric(stocks[f'価格_{d}'], errors='coerce')
-        stocks[f'売上成長(%)_{d}'] = pd.to_numeric(stocks[f'売上成長(%)_{d}'], errors='coerce').fillna(0)
-
-    # ランキングロジック: 出現頻度 × 成長率 × タイトネス
     ranked_list = []
     for _, row in stocks.iterrows():
-        prices = [row[f'価格_{d}'] for d in dates if pd.notnull(row[f'価格_{d}'])]
-        if len(prices) < 3: continue
+        # 5日間の価格をリスト化
+        prices = [pd.to_numeric(row.get(f'価格_{d}'), errors='coerce') for d in dates]
+        prices = [p for p in prices if pd.notnull(p)]
         
-        volatility = (max(prices) - min(prices)) / min(prices)
-        is_tight = volatility < 0.08 # 8%以内をタイトと定義
-        is_super = "超優秀" in str(row[f'成長性判定_{latest_date}'])
+        if len(prices) < 2: continue # 1日しか出ていないものは除外（変化を追うため）
+
+        # 変化の指標
+        volatility = (max(prices) - min(prices)) / min(prices) if prices else 1.0
+        is_tight = volatility < 0.07 # 7%以内
+        is_improving = prices[-1] >= prices[0] # 初日より価格が維持または上昇
         
-        score = (row['出現回数'] * 20) + (row[f'売上成長(%)_{latest_date}'] * 0.5)
-        if is_tight: score += 30
-        if is_super: score += 50
+        # スコア計算
+        persistence = row.get('出現回数', 0)
+        growth = pd.to_numeric(row.get(f'売上成長(%)_{latest_date}'), errors='coerce') or 0
+        
+        score = (persistence * 25) + (growth * 0.3)
+        if is_tight: score += 40
+        if "超優秀" in str(row.get(f'成長性判定_{latest_date}')): score += 50
         
         ranked_list.append({
             'ticker': row['銘柄'],
             'score': score,
+            'persistence': persistence,
             'is_tight': is_tight,
-            'is_super': is_super,
-            'growth': row[f'売上成長(%)_{latest_date}'],
-            'pattern': row[f'パターン_{latest_date}'],
-            'count': row['出現回_数'] if '出現回_数' in row else row.get('出現回数', 0)
+            'growth': growth,
+            'pattern': row.get(f'パターン_{latest_date}', '不明'),
+            'price_change': ((prices[-1]/prices[0])-1)*100 if prices else 0
         })
     
     top_stocks = sorted(ranked_list, key=lambda x: x['score'], reverse=True)[:5]
 
-    # --- HTML & Plotly 生成 ---
-    # (チャート作成部分は前回同様、ただし配置を調整)
-    fig_market = make_subplots(specs=[[{"secondary_y": True}]])
-    fig_market.add_trace(go.Bar(x=dates, y=ad_list, name="A/D比"), secondary_y=False)
-    fig_market.add_trace(go.Scatter(x=dates, y=dist_list, name="売り抜け日", line=dict(color='red')), secondary_y=True)
-    
+    # --- 3. チャート作成 (複数描画) ---
+    # チャート1: 市場環境トレンド
+    fig1 = make_subplots(specs=[[{"secondary_y": True}]])
+    fig1.add_trace(go.Scatter(x=dates, y=[m['ad'] for m in market_history], name="A/D比", line=dict(width=4, color='dodgerblue')), secondary_y=False)
+    fig1.add_trace(go.Bar(x=dates, y=[m['dist'] for m in market_history], name="売り抜け日", opacity=0.3, marker_color='red'), secondary_y=True)
+    fig1.update_layout(title="📈 市場環境：A/D比と供給（売り抜け日）の相関", height=400)
+
+    # チャート2: 有望銘柄の「タイトネス」比較
+    fig2 = go.Figure()
+    for s in top_stocks:
+        p_history = [pd.to_numeric(stocks[stocks['銘柄']==s['ticker']][f'価格_{d}'].values[0], errors='coerce') for d in dates]
+        base_p = next((p for p in p_history if pd.notnull(p)), None)
+        if base_p:
+            norm_p = [((p/base_p)-1)*100 if pd.notnull(p) else None for p in p_history]
+            fig2.add_trace(go.Scatter(x=dates, y=norm_p, name=s['ticker'], mode='lines+markers'))
+    fig2.update_layout(title="📉 選抜5銘柄の相対価格推移（VCP収束の確認）", yaxis_title="変化率 (%)", height=400)
+
+    # --- 4. 生成されるレポート (HTML) ---
     report_html = f"""
     <html>
     <head>
         <meta charset='utf-8'>
         <style>
-            body {{ font-family: sans-serif; margin: 40px; line-height: 1.6; color: #333; }}
-            .section {{ background: #f9f9f9; padding: 20px; border-radius: 8px; margin-bottom: 20px; border-left: 5px solid #2c3e50; }}
-            .highlight {{ color: #e74c3c; font-weight: bold; }}
-            .ticker-card {{ background: white; border: 1px solid #ddd; padding: 15px; margin: 10px 0; border-radius: 5px; }}
-            .badge {{ display: inline-block; padding: 3px 8px; border-radius: 3px; font-size: 12px; margin-right: 5px; color: white; }}
-            .badge-super {{ background: #f1c40f; color: black; }}
-            .badge-tight {{ background: #2ecc71; }}
+            body {{ font-family: 'Helvetica Neue', Arial, sans-serif; line-height: 1.7; color: #333; max-width: 1000px; margin: auto; padding: 40px; background: #f4f7f6; }}
+            .card {{ background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 30px; }}
+            h1, h2 {{ color: #2c3e50; border-bottom: 2px solid #eee; padding-bottom: 10px; }}
+            .status-box {{ display: flex; justify-content: space-around; background: #2c3e50; color: white; padding: 20px; border-radius: 8px; }}
+            .insight {{ background: #e8f4fd; border-left: 5px solid #3498db; padding: 15px; font-style: italic; }}
+            .rank-item {{ border-bottom: 1px solid #eee; padding: 15px 0; }}
+            .badge {{ background: #27ae60; color: white; padding: 2px 8px; border-radius: 4px; font-size: 12px; }}
         </style>
     </head>
     <body>
-        <h1>📊 週次戦略レポート: {datetime.now().strftime('%Y-%m-%d')}</h1>
+        <h1>📊 週次：市場環境と銘柄の深層分析</h1>
         
-        <div class="section">
-            <h2>🌍 市場環境の洞察 (Alexander Elder's View)</h2>
-            <p>現在の市場ステータス: <span class="highlight">{market_status}</span></p>
-            <ul>
-                <li><strong>市場の広がり (A/D比):</strong> 現在 {current_ad:.2f}。傾向は <b>{ad_trend}</b> です。1.05を超えて維持されている場合、上昇の質は健全です。</li>
-                <li><strong>機関投資家の動き:</strong> 売り抜け日は現在 {dist_list[-1]} 日。5日を超えると天井圏のサインですが、現在は{'許容範囲内' if dist_list[-1] < 5 else '警戒レベル'}です。</li>
-                <li><strong>総評:</strong> {market_row.get(f'価格_{latest_date}', 'データなし')}。この数値に基づくと、現在は「{'積極的に買いを検討すべき' if market_status == '【健全】' else 'キャッシュ比率を高めるべき'}」局面です。</li>
-            </ul>
+        <div class="card">
+            <h2>🌍 市場環境の変遷とGeminiの洞察</h2>
+            <div class="status-box">
+                <div>最新A/D比: <b>{market_history[-1]['ad']:.2f}</b></div>
+                <div>売り抜け日: <b>{market_history[-1]['dist']}日</b></div>
+                <div>安値から: <b>{market_history[-1]['low_days']}日目</b></div>
+            </div>
+            <p></p>
+            <div class="insight">
+                <b>🔍 市場の「質の変化」への洞察:</b><br>
+                {self_generate_insight(market_history)}
+            </div>
         </div>
 
-        <div class="section">
-            <h2>🏆 注目銘柄ランキング Top 5 (Minervini's Focus)</h2>
+        <div class="card">
+            <h2>🏆 注目銘柄ランキング（定着率・収束重視）</h2>
+            <p>※1日のスナップショットではなく、週を通じてリストに残り続け、かつ値動きがタイト（VCP）な銘柄を上位に選出しています。</p>
             {"".join([f'''
-            <div class="ticker-card">
-                <b>第{i+1}位: {s['ticker']}</b> 
-                {"<span class='badge badge-super'>超優秀</span>" if s['is_super'] else ""}
-                {"<span class='badge badge-tight'>VCP兆候</span>" if s['is_tight'] else ""}
-                <br>
+            <div class="rank-item">
+                <b>{i+1}. {s['ticker']}</b> <span class="badge">定着率: {s['persistence']}/5日</span> 
+                { " <span class='badge' style='background:#f1c40f; color:black;'>VCP兆候</span>" if s['is_tight'] else "" }
                 <ul>
-                    <li><b>根拠:</b> 出現頻度 {s['count']}/5日。売上成長率 {s['growth']:.1f}%。</li>
-                    <li><b>テクニカル:</b> {s['pattern']}。{'価格が収束しており、ブレイクアウト目前のタイトネスが見られます。' if s['is_tight'] else 'ボラティリティはまだ高めですが、強いトレンドの中にあります。'}</li>
+                    <li><b>テクニカル洞察:</b> 5日間の値幅変動が {abs(s['price_change']):.1f}% 以内に抑えられており、{s['pattern']} の中で機関投資家の「静かな買い」が推測されます。</li>
+                    <li><b>ファンダメンタルズ:</b> 最新の売上成長率は {s['growth']:.1f}%。リストへの高い定着率は、一時的なニュースではなくトレンドとしての強さを示唆しています。</li>
                 </ul>
             </div>
             ''' for i, s in enumerate(top_stocks)])}
         </div>
 
-        <div class="section">
-            <h2>📈 視覚的分析 (チャート)</h2>
-            {fig_market.to_html(full_html=False, include_plotlyjs='cdn')}
-            <p><i>※A/D比が伸びながら売り抜け日が横ばい、または減少している状態が理想的な上昇トレンドです。</i></p>
+        <div class="card">
+            <h2>📊 チャート解説と視覚的分析</h2>
+            {fig1.to_html(full_html=False, include_plotlyjs='cdn')}
+            <div class="insight">
+                <b>💡 グラフ1の読み方:</b> A/D比（青線）が上昇し、売り抜け日（赤棒）が減少している状態が最強の買いシグナルです。
+                逆に「安値からの日数」が増えているのにA/D比が低下している場合は、上昇のエネルギーが枯渇している「チャーニング（空回り）」を警戒してください。
+            </div>
+            <br>
+            {fig2.to_html(full_html=False, include_plotlyjs='cdn')}
+            <div class="insight">
+                <b>💡 グラフ2の読み方:</b> 各銘柄の価格推移を週初を0%として比較しています。線が水平に近く、かつ細かく上下している銘柄は、ミネルヴィニ氏の言う「タイトネス」が形成されており、次のブレイクアウトの準備が整っている可能性が高いです。
+            </div>
         </div>
     </body>
     </html>
     """
     return report_html
+
+def self_generate_insight(history):
+    """市場データの変化から洞察を生成するロジック"""
+    start = history[0]
+    end = history[-1]
+    
+    insight = ""
+    # A/D比の変化
+    if end['ad'] > start['ad']:
+        insight += f"・A/D比が {start['ad']:.2f} から {end['ad']:.2f} へ改善。市場の広がりが強まっており、買いの質が向上しています。<br>"
+    else:
+        insight += f"・A/D比が低下傾向にあります。指数の上昇に対して個別銘柄の追随が弱まっており、選別色を強める必要があります。<br>"
+
+    # 売り抜けと安値からの日数
+    if end['dist'] > start['dist']:
+        insight += f"・安値から {end['low_days']} 日が経過しましたが、売り抜け日が {end['dist']} 日に増加。上昇の初期段階としては供給（売り）がやや強すぎます。<br>"
+    elif end['low_days'] > start['low_days'] and end['dist'] == start['dist']:
+        insight += f"・安値から {end['low_days']} 日目。売り抜け日が増えていないことは、上昇トレンドが機関投資家にサポートされている健全な証拠です。<br>"
+    
+    return insight
 
 def upload_to_drive(content, filename):
     service = get_drive_service()
@@ -159,6 +207,6 @@ def upload_to_drive(content, filename):
 
 if __name__ == "__main__":
     trend_df, csv_name = fetch_latest_summary()
-    html_report = create_rich_report(trend_df)
+    html_report = create_intelligence_report(trend_df)
     report_filename = csv_name.replace('weekly_detailed_trend', 'investment_intelligence').replace('.csv', '.html')
     upload_to_drive(html_report, report_filename)
