@@ -23,45 +23,49 @@ def get_drive_service():
     return build('drive', 'v3', credentials=creds)
 
 def ask_gemini_for_insight(market_history, top_stocks):
-    """Gemini APIを使用して、データから人間のような投資洞察を生成する"""
+    """Gemini 3 API を使用して、最新の推論エンジンによる投資洞察を生成する"""
     if not GEMINI_API_KEY:
-        return "⚠️ GEMINI_API_KEYが設定されていないため、アルゴリズムによる簡易分析を表示します。"
+        return "⚠️ GEMINI_API_KEY 未設定のため、AI分析をスキップしました。"
 
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-1.5-flash')
-
-    market_text = "\n".join([f"- {m['date']}: {m['raw']}" for m in market_history])
-    stocks_text = "\n".join([f"- {s['ticker']}: 定着率{s['persistence']}/5日, 最新売上成長{s['growth']:.1f}%, パターン:{s['pattern']}" for s in top_stocks])
-
-    prompt = f"""
-    あなたはマーク・ミネルヴィニとアレキサンダー・エルダー博士の視点を持つプロの投資助言AIです。
-    以下の1週間分の市場データと、5日間のスクリーニングを生き残った注目銘柄リストを分析してください。
-
-    ### 1週間の市場データ推移
-    {market_text}
-
-    ### 週次スクリーニング残留銘柄（重要）
-    {stocks_text}
-
-    ### 依頼事項（日本語で回答）
-    1. 市場の質の変化: A/D比の変化と、「安値からの日数」に対する「売り抜け日」の蓄積から、現在のマーケットの「真の強さ」を考察してください。
-    2. 定着銘柄の評価: 5日間リストに残り続けた銘柄の「定着率」が意味する需給バランスと、ミネルヴィニ流のVCP（収束）の予兆について触れてください。
-    3. 来週への戦略的提言: 攻めるべきか、キャッシュを守るべきか、具体的な根拠と共に提示してください。
-
-    ※HTMLタグ（<br>, <b>等）を使って読みやすく構造化して出力してください。
-    """
     try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        
+        # 2026年現在の最新モデル: Gemini 3 Flash
+        # 最新のプレビュー版を直接指定、または 'gemini-flash-latest' を使用
+        model = genai.GenerativeModel('gemini-3-flash-preview')
+
+        market_text = "\n".join([f"- {m['date']}: {m['raw']}" for m in market_history])
+        stocks_text = "\n".join([f"- {s['ticker']}: 定着率{s['persistence']}/5日, 最新売上成長{s['growth']:.1f}%, パターン:{s['pattern']}" for s in top_stocks])
+
+        prompt = f"""
+        あなたはマーク・ミネルヴィニとアレキサンダー・エルダー博士の投資哲学を継承した、Gemini 3 世代の高度投資アナリストです。
+        以下の市場データと注目銘柄リストを分析し、機関投資家の動きを読み解く「週次戦略レポート」を生成してください。
+
+        ### 1週間の市場データ推移
+        {market_text}
+
+        ### 週次スクリーニング残留銘柄（機関投資家の関心が強い群）
+        {stocks_text}
+
+        ### 分析の要件（日本語）
+        1. 市場の質の変化: A/D比の変化と、「安値からの日数」に対する「売り抜け日」の蓄積から、現在のマーケットの「真の強さ」を考察してください。
+        2. 定着銘柄の評価: 5日間リストに残り続けた銘柄の需給バランスと、VCP（ボラティリティ収束）の予兆について触れてください。
+        3. 戦略的アクション: Gemini 3 の高度な推論に基づき、来週の具体的な戦略（攻め/守り）を提示してください。
+
+        ※HTML形式（<b>, <br>等）で、視覚的に分かりやすく出力してください。
+        """
         response = model.generate_content(prompt)
         return response.text.replace('\n', '<br>')
     except Exception as e:
-        return f"Gemini分析エラー: {str(e)}"
+        return f"❌ Gemini 3 分析エラー: {str(e)}"
 
+# --- データ解析・レポート生成ロジック ---
 def create_intelligence_report(df):
     date_cols = sorted([c for c in df.columns if '価格_' in c])
     dates = [c.split('_')[-1] for c in date_cols]
     latest_date = dates[-1]
 
-    # --- 市場環境解析 ---
+    # 市場環境解析 (REPORT_METADATA のパース)
     market_row = df[df['銘柄'] == '### MARKET_ENVIRONMENT ###'].iloc[0]
     market_history = []
     for d in dates:
@@ -75,7 +79,7 @@ def create_intelligence_report(df):
             'low_days': int(low_days.group(1)) if low_days else 0, 'raw': meta
         })
 
-    # --- 銘柄ランキング解析 ---
+    # 銘柄スコアリング
     stocks = df[df['銘柄'] != '### MARKET_ENVIRONMENT ###'].copy()
     ranked_list = []
     for _, row in stocks.iterrows():
@@ -87,21 +91,21 @@ def create_intelligence_report(df):
         persistence = pd.to_numeric(row.get('出現回数', 0), errors='coerce') or 0
         growth = pd.to_numeric(row.get(f'売上成長(%)_{latest_date}'), errors='coerce') or 0
         
-        score = (float(persistence) * 40.0) + (float(growth) * 0.5)
-        is_tight = volatility < 0.08
-        if is_tight: score += 50.0
-        if "超優秀" in str(row.get(f'成長性判定_{latest_date}')): score += 60.0
+        # スコアリング: 定着率と収束（VCP）を最大重視
+        score = (float(persistence) * 50.0) + (float(growth) * 0.5)
+        if volatility < 0.08: score += 60.0 # タイトネス加点
+        if "超優秀" in str(row.get(f'成長性判定_{latest_date}')): score += 70.0
         
         ranked_list.append({
             'ticker': row['銘柄'], 'score': score, 'persistence': int(persistence),
-            'is_tight': is_tight, 'growth': growth, 'pattern': row.get(f'パターン_{latest_date}', '不明'),
+            'growth': growth, 'pattern': row.get(f'パターン_{latest_date}', '不明'),
             'price_change': ((prices[-1]/prices[0])-1)*100
         })
     
     top_stocks = sorted(ranked_list, key=lambda x: x['score'], reverse=True)[:5]
     gemini_insight = ask_gemini_for_insight(market_history, top_stocks)
 
-    # --- チャート生成 ---
+    # チャート生成 (Plotly)
     fig1 = make_subplots(specs=[[{"secondary_y": True}]])
     fig1.add_trace(go.Scatter(x=dates, y=[m['ad'] for m in market_history], name="A/D比", line=dict(width=4, color='dodgerblue')), secondary_y=False)
     fig1.add_trace(go.Bar(x=dates, y=[m['dist'] for m in market_history], name="売り抜け日", opacity=0.3, marker_color='red'), secondary_y=True)
@@ -116,7 +120,7 @@ def create_intelligence_report(df):
             fig2.add_trace(go.Scatter(x=dates, y=norm_p, name=s['ticker'], mode='lines+markers'))
     fig2.update_layout(title="📉 注目銘柄のボラティリティ収束推移 (週初比 %)", height=400, template="plotly_white")
 
-    # --- HTML 生成 ---
+    # HTML 構築
     report_html = f"""
     <html>
     <head>
@@ -132,22 +136,21 @@ def create_intelligence_report(df):
         </style>
     </head>
     <body>
-        <h1>📊 週次・戦略投資判断レポート by Gemini</h1>
+        <h1>📊 週次・戦略投資判断レポート by Gemini 3</h1>
         <div class="card">
-            <h2>🧠 Gemini による深層インサイト</h2>
+            <h2>🧠 Gemini 3 による深層インサイト</h2>
             <div class="insight-box">{gemini_insight}</div>
         </div>
         <div class="card">
-            <h2>🏆 注目銘柄ランキング Top 5</h2>
+            <h2>🏆 注目銘柄ランキング Top 5 (Survival Analysis)</h2>
             <div class="rank-grid">
                 {"".join([f'''
                 <div class="rank-card">
                     <h3>{s['ticker']}</h3>
                     <span class="badge">定着率: {s['persistence']}/5日</span> 
-                    {"<span class='badge' style='background:#f1c40f; color:black;'>VCP</span>" if s['is_tight'] else ""}
-                    <p>売上成長: {s['growth']:.1f}% / パターン: {s['pattern']}<br>週次推移: {s['price_change']:+.2f}%</p>
+                    <p>最新売上成長: {s['growth']:.1f}% / パターン: {s['pattern']}<br>週次価格推移: {s['price_change']:+.2f}%</p>
                 </div>
-                ''' for i, s in enumerate(top_stocks)])}
+                ''' for s in top_stocks])}
             </div>
         </div>
         <div class="card">
