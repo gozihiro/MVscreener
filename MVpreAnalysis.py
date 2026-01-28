@@ -9,125 +9,97 @@ import io
 
 # --- 環境変数の取得 ---
 def get_env(name):
-    val = os.environ.get(name)
-    if not val or val.strip() == "":
-        return None
-    return val
+    return os.environ.get(name)
 
 CLIENT_ID = get_env('CLIENT_ID')
 CLIENT_SECRET = get_env('CLIENT_SECRET')
 REFRESH_TOKEN = get_env('REFRESH_TOKEN')
 FOLDER_ID = get_env('GDRIVE_FOLDER_ID')
 
-if not all([CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN, FOLDER_ID]):
-    print("❌ エラー: 必要な認証情報（CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN, GDRIVE_FOLDER_ID）が不足しています。")
-    sys.exit(1)
+# 必須項目の定義
+REQUIRED_COLS = [
+    '銘柄', '価格', 'パターン', '成長性判定', '売上成長(%)', 
+    '営業利益成長(EBITDA)%', '純利益成長(%)', '営業CF(M)', '時価総額(B)'
+]
 
 def get_drive_service():
-    creds = Credentials(
-        token=None,
-        refresh_token=REFRESH_TOKEN,
-        client_id=CLIENT_ID,
-        client_secret=CLIENT_SECRET,
-        token_uri="https://oauth2.googleapis.com/token"
-    )
+    creds = Credentials(token=None, refresh_token=REFRESH_TOKEN, client_id=CLIENT_ID, client_secret=CLIENT_SECRET, token_uri="https://oauth2.googleapis.com/token")
     return build('drive', 'v3', credentials=creds)
 
 def get_target_time_ranges():
-    """今日(JST)から遡り、直近5営業日分(JST火〜土)の検索範囲を生成"""
     jst = timezone(timedelta(hours=9))
     now = datetime.now(jst)
-    
     ranges = []
-    # 過去7日間をスキャンし、マーケット結果が生成される「火〜土」の5日分を確保
     for i in range(7):
         day = now - timedelta(days=i)
-        # 火(1)〜土(5) の朝に生成されたファイルが、月〜金のマーケット結果
-        if day.weekday() in [1, 2, 3, 4, 5]:
-            # 時間枠を広げ、その日のうちに作成されたものを対象にする
+        if day.weekday() in [1, 2, 3, 4, 5]: # 火〜土(JST) = 月〜金(Market)
             start = day.replace(hour=0, minute=0, second=0, microsecond=0)
             end = day.replace(hour=23, minute=59, second=59, microsecond=0)
             ranges.append((start, end))
-        
-        if len(ranges) == 5:
-            break
-            
-    return sorted(ranges) # 日付の古い順にソート
+        if len(ranges) == 5: break
+    return sorted(ranges)
 
 def fetch_weekly_data():
     service = get_drive_service()
     ranges = get_target_time_ranges()
     weekly_dfs = []
 
-    print("=== 週次データ特定フェーズ (JST) ===")
     for start, end in ranges:
-        # 市場が動いた日付（JST朝のファイル作成日の前日）を表示用にする
-        market_date = (start - timedelta(days=1)).strftime('%Y-%m-%d')
-        
-        s_str = start.isoformat()
-        e_str = end.isoformat()
-        
-        query = (f"'{FOLDER_ID}' in parents and name = 'minervini_final_results.csv' "
-                 f"and createdTime >= '{s_str}' and createdTime <= '{e_str}' "
-                 f"and trashed = false")
-        
-        results = service.files().list(q=query, fields="files(id, name, createdTime)", orderBy="createdTime").execute()
-        files = results.get('files', [])
+        market_date = (start - timedelta(days=1)).strftime('%m/%d')
+        q = f"'{FOLDER_ID}' in parents and name = 'minervini_final_results.csv' and createdTime >= '{start.isoformat()}' and createdTime <= '{end.isoformat()}' and trashed = false"
+        res = service.files().list(q=q, fields="files(id, createdTime)", orderBy="createdTime").execute()
+        files = res.get('files', [])
 
         if files:
-            # その日の期間内で最初に作成されたファイルを正データとする
-            file_id = files[0]['id']
-            created_time = files[0]['createdTime']
-            print(f"✅ {market_date}: 発見 (作成日時: {created_time})")
-            
-            request = service.files().get_media(fileId=file_id)
+            req = service.files().get_media(fileId=files[0]['id'])
             fh = io.BytesIO()
-            downloader = MediaIoBaseDownload(fh, request)
+            downloader = MediaIoBaseDownload(fh, req)
             done = False
-            while not done:
-                _, done = downloader.next_chunk()
-            
+            while not done: _, done = downloader.next_chunk()
             fh.seek(0)
-            # 1行目のREPORT_METADATAをスキップ
             df = pd.read_csv(fh, skiprows=1)
-            if '銘柄' in df.columns:
-                df['Market_Date'] = market_date
-                weekly_dfs.append(df)
-        else:
-            print(f"❌ {market_date}: 期間内にファイルが見つかりません ({start.date()})")
-
+            
+            # 列の正規化（存在しない列は「不明」で埋める）
+            for col in REQUIRED_COLS:
+                if col not in df.columns:
+                    df[col] = "不明"
+            
+            df = df[REQUIRED_COLS].copy()
+            df['Date'] = market_date
+            weekly_dfs.append(df)
+            print(f"✅ {market_date} のデータを読み込みました")
     return weekly_dfs
 
-def analyze_weekly_persistence(dfs):
-    """銘柄の出現頻度と直近データを集計"""
-    if not dfs:
-        return None
+def analyze_trend(dfs):
+    if not dfs: return None
     
-    combined_df = pd.concat(dfs, ignore_index=True)
+    # 全日程の銘柄リストを作成
+    all_data = pd.concat(dfs, ignore_index=True)
+    tickers = all_data['銘柄'].unique()
     
-    # 出現頻度のカウント
-    persistence = combined_df.groupby('銘柄').size().reset_index(name='出現回数')
+    # 銘柄ごとの出現回数
+    persistence = all_data.groupby('銘柄').size().reset_index(name='出現回数')
     
-    # 最新の情報を取得（Market_Dateが最新のものを採用）
-    latest_info = combined_df.sort_values('Market_Date').groupby('銘柄').tail(1)
+    # 横持ち（Pivot）形式でトレンドを作成
+    # 各日付のデータを列に展開
+    trend_df = persistence.copy()
     
-    # 結合して、出現回数と最新情報をまとめる
-    result = pd.merge(persistence, latest_info[['銘柄', '価格', 'パターン', '成長性判定', '売上成長(%)']], on='銘柄')
-    
-    # 出現回数、次いで売上成長率でソート
-    return result.sort_values(by=['出現回数', '売上成長(%)'], ascending=False)
+    for df in dfs:
+        date_str = df['Date'].iloc[0]
+        # その日のデータを抽出し、列名を日付付きに変更
+        daily_df = df.set_index('銘柄').add_suffix(f'_{date_str}')
+        trend_df = trend_df.merge(daily_df, on='銘柄', how='left')
+
+    # カラムの並び替え（銘柄, 出現回数, 日付ごとの全項目...）
+    return trend_df.fillna('－')
 
 if __name__ == "__main__":
     dfs = fetch_weekly_data()
+    result = analyze_trend(dfs)
     
-    if dfs:
-        result_df = analyze_weekly_persistence(dfs)
-        if result_df is not None:
-            save_name = "weekly_persistence_summary.csv"
-            result_df.to_csv(save_name, index=False, encoding='utf-8-sig')
-            
-            print(f"\n=== 週次銘柄定着率集計 (Top 20) ===")
-            print(result_df.head(20).to_string(index=False))
-            print(f"\n>> {save_name} に保存しました。")
-    else:
-        print("\n⚠️ 分析対象のデータが1日分も見つかりませんでした。")
+    if result is not None:
+        save_name = "weekly_detailed_trend.csv"
+        result.to_csv(save_name, index=False, encoding='utf-8-sig')
+        print(f"\n>> {save_name} に詳細な遷移データを保存しました。")
+        # 上位5件のみ表示
+        print(result.head(5).to_string())
