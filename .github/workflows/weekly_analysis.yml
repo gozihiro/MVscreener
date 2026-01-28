@@ -29,3 +29,16 @@ jobs:
         with:
           name: weekly-summary
           path: weekly_persistence_summary.csv
+      - name: Run Phase 2 Analysis
+        env:
+          CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
+          SUMMARY_FOLDER_ID: ${{ secrets.SUMMARY_FOLDER_ID }}
+        run: python MVweeklyReport.py
+
+      - name: Upload Analysis Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-investment-report
+          path: weekly_investment_report.md
