@@ -1,0 +1,30 @@
+name: Weekly Persistence Analysis (Strict)
+
+on:
+  schedule:
+    # 毎週土曜日 JST 07:15 (UTC 金曜 22:15)
+    - cron: '15 22 * * 5'
+  workflow_dispatch:
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install
+        run: pip install pandas google-api-python-client google-auth-httplib2 google-auth-oauthlib
+      - name: Run
+        env:
+          CLIENT_ID: ${{ secrets.CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.REFRESH_TOKEN }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+        run: python MVpreAnalysis.py # ファイル名を指定
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-summary
+          path: weekly_persistence_summary.csv
