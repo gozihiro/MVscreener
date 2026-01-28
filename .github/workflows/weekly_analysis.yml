@@ -1,9 +1,9 @@
 name: MV Weekly Intelligence Analysis
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # 手動実行用
   schedule:
-    - cron: '0 23 * * 5' # 土曜朝 8:00 JST
+    - cron: '0 23 * * 5' # 日本時間：毎週土曜 朝8:00（世界標準時：金曜 23:00）
 
 jobs:
   analyze:
@@ -20,9 +20,10 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          # google-generativeai を追加して Gemini 3 を利用可能にする
           pip install pandas google-api-python-client google-auth-httplib2 google-auth-oauthlib plotly google-generativeai
 
-      - name: Run Phase 1 (Data Integration)
+      - name: Run Phase 1 (Collect Trend Data)
         env:
           CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
           CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
@@ -31,19 +32,20 @@ jobs:
           SUMMARY_FOLDER_ID: ${{ secrets.SUMMARY_FOLDER_ID }}
         run: python MVpreAnalysis.py
 
-      - name: Run Phase 2 (Gemini Intelligence Report)
+      - name: Run Phase 2 (Gemini 3 Intelligence Analysis)
         env:
           CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
           CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
           REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
           SUMMARY_FOLDER_ID: ${{ secrets.SUMMARY_FOLDER_ID }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }} # APIキーを環境変数として注入
         run: python MVweeklyReport.py
 
-      - name: Upload Artifacts
+      - name: Save Local Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: intelligence-report
+          name: analysis-report
           path: |
+            weekly_detailed_trend.csv
             weekly_report.html
