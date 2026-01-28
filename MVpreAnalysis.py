@@ -6,7 +6,6 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 import io
-import re
 
 # --- 環境変数の取得 ---
 def get_env(name):
@@ -17,6 +16,7 @@ CLIENT_SECRET = get_env('CLIENT_SECRET')
 REFRESH_TOKEN = get_env('REFRESH_TOKEN')
 PARENT_FOLDER_ID = get_env('GDRIVE_FOLDER_ID')
 
+# 解析対象の全項目
 REQUIRED_COLS = [
     '銘柄', '価格', 'パターン', '成長性判定', '売上成長(%)', 
     '営業利益成長(EBITDA)%', '純利益成長(%)', '営業CF(M)', '時価総額(B)'
@@ -50,7 +50,7 @@ def get_target_time_ranges():
     ranges = []
     for i in range(7):
         day = now - timedelta(days=i)
-        if day.weekday() in [1, 2, 3, 4, 5]:
+        if day.weekday() in [1, 2, 3, 4, 5]: # 火〜土(JST) = 月〜金(Market)
             start = day.replace(hour=0, minute=0, second=0, microsecond=0)
             end = day.replace(hour=23, minute=59, second=59, microsecond=0)
             ranges.append((start, end))
@@ -71,21 +71,22 @@ def fetch_weekly_data():
         files = res.get('files', [])
 
         if files:
-            req = service.files().get_media(fileId=files[0]['id'])
+            file_id = files[0]['id']
+            req = service.files().get_media(fileId=file_id)
             fh = io.BytesIO()
             downloader = MediaIoBaseDownload(fh, req)
             done = False
             while not done: _, done = downloader.next_chunk()
             
             fh.seek(0)
-            raw_content = fh.read().decode('utf-8-sig').splitlines()
+            content = fh.read().decode('utf-8-sig').splitlines()
             
-            # 1行目の市場環境データを解析
-            metadata_line = raw_content[0] if raw_content else ""
+            # 1行目の市場環境データを保持
+            metadata_line = content[0] if content else ""
             market_metadatas.append({'Date': market_date, 'Metadata': metadata_line})
             
-            # データ本体を読み込み
-            df = pd.read_csv(io.StringIO("\n".join(raw_content[1:])))
+            # データ本体をDF化
+            df = pd.read_csv(io.StringIO("\n".join(content[1:])))
             for col in REQUIRED_COLS:
                 if col not in df.columns: df[col] = "不明"
             
@@ -102,31 +103,38 @@ def analyze_detailed_trend(dfs, metadatas):
     if not dfs: return None
     
     print("=== Phase 2: 市場・銘柄トレンド分析 ===")
+    # 全日程をマージ
     all_raw = pd.concat(dfs, ignore_index=True)
-    trend_df = all_raw.groupby('銘柄').size().reset_index(name='出現回数')
-
-    # 市場環境行（特殊行）の作成
-    market_row = {'銘柄': '### MARKET_ENVIRONMENT ###', '出現回数': '-'}
     
-    for meta in metadatas:
+    # 銘柄ごとの出現回数
+    summary = all_raw.groupby('銘柄').size().reset_index(name='出現回数')
+    
+    # 横持ち（Pivot）形式でトレンドを作成
+    trend_df = summary.copy()
+    
+    # 市場環境行の初期化
+    market_row = {'銘柄': '### MARKET_ENVIRONMENT ###', '出現回数': '-'}
+
+    # 収集したデータとメタデータを日付順に処理
+    for df, meta in zip(dfs, metadatas):
         date = meta['Date']
-        # 市場ステータス等の抽出（"ラリー試行中"などを取得）
+        # 市場ステータスを価格列の位置に格納
         market_row[f'価格_{date}'] = meta['Metadata']
         
-        # 銘柄ごとの各項目を結合
-        daily_df = [d for d in dfs if d['Date'] == date][0].set_index('銘柄').add_suffix(f'_{date}')
-        trend_df = trend_df.merge(daily_df.drop(columns=[f'Date_{date}']), on='銘柄', how='left')
+        # 銘柄データの列を日付付きで結合
+        daily_part = df.set_index('銘柄').drop(columns=['Date']).add_suffix(f'_{date}')
+        trend_df = trend_df.merge(daily_part, on='銘柄', how='left')
 
-    # 市場環境を1行目に挿入
+    # 市場環境行を1行目に挿入
     result = pd.concat([pd.DataFrame([market_row]), trend_df], ignore_index=True)
-    
-    # ソート（市場環境行を最上部に固定し、以降は出現回数順）
-    latest_date = dfs[-1]['Date']
+
+    # 出現回数と最新の売上成長でソート
+    latest_date = dfs[-1]['Date'].iloc[0] if isinstance(dfs[-1]['Date'], pd.Series) else dfs[-1]['Date']
     sort_col = f'売上成長(%)_{latest_date}'
+    
     if sort_col in result.columns:
         result['_sort'] = pd.to_numeric(result[sort_col], errors='coerce').fillna(-999)
-        # 1行目以外をソート
-        top = result.iloc[:1]
+        top = result.iloc[:1] # 市場環境行
         others = result.iloc[1:].sort_values(by=['出現回数', '_sort'], ascending=False)
         result = pd.concat([top, others]).drop(columns=['_sort'])
     
@@ -146,14 +154,14 @@ def upload_result_to_drive(file_path):
 
     if files:
         service.files().update(fileId=files[0]['id'], media_body=media).execute()
-        print(f"✅ Summaryフォルダ内のファイルを更新しました: {file_name}")
+        print(f"✅ Summaryフォルダ内の既存ファイルを更新しました: {file_name}")
     else:
         service.files().create(body=file_metadata, media_body=media).execute()
         print(f"✅ Summaryフォルダに新規保存しました: {file_name}")
 
 if __name__ == "__main__":
     if not all([CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN, PARENT_FOLDER_ID]):
-        print("❌ 認証情報の不足。")
+        print("❌ 認証情報の不足。GitHub Secretsを確認してください。")
         sys.exit(1)
 
     weekly_data, metadatas = fetch_weekly_data()
@@ -164,4 +172,4 @@ if __name__ == "__main__":
             trend_result.to_csv(output_file, index=False, encoding='utf-8-sig')
             upload_result_to_drive(output_file)
     else:
-        print("⚠️ データ不足により中断")
+        print("⚠️ 有効なデータが見つからなかったため終了します。")
