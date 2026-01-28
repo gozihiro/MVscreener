@@ -27,20 +27,14 @@ def get_drive_service():
     return build('drive', 'v3', credentials=creds)
 
 def get_or_create_summary_folder(service):
-    """現在のフォルダ内にSummaryフォルダを特定または作成（重複防止を強化）"""
-    # 名前だけで検索し、後から親フォルダとタイプをチェックする
-    query = f"name = 'Summary' and '{PARENT_FOLDER_ID}' in parents and trashed = false"
-    res = service.files().list(q=query, fields="files(id, mimeType, name)").execute()
-    files = res.get('files', [])
-    
-    # フォルダであるものを抽出
-    folders = [f for f in files if f['mimeType'] == 'application/vnd.google-apps.folder']
+    """現在のフォルダ内にSummaryフォルダを特定または作成"""
+    query = f"name = 'Summary' and '{PARENT_FOLDER_ID}' in parents and trashed = false and mimeType = 'application/vnd.google-apps.folder'"
+    res = service.files().list(q=query, fields="files(id)").execute()
+    folders = res.get('files', [])
     
     if folders:
-        # 既にある場合は、最初に見つかったフォルダのIDを返す
         return folders[0]['id']
     else:
-        # 一切存在しない場合のみ新規作成
         file_metadata = {
             'name': 'Summary',
             'mimeType': 'application/vnd.google-apps.folder',
@@ -72,7 +66,11 @@ def fetch_weekly_data():
     print("=== Phase 1: データ収集と市場環境解析 (JST) ===")
     for start, end in ranges:
         market_date = (start - timedelta(days=1)).strftime('%m/%d')
-        q = f"'{PARENT_FOLDER_ID}' in parents and name = 'minervini_final_results.csv' and createdTime >= '{start.isoformat()}' and createdTime <= '{end.isoformat()}' and trashed = false"
+        # 変数名を 'query' に統一して NameError を防止
+        query = (f"'{PARENT_FOLDER_ID}' in parents and name = 'minervini_final_results.csv' "
+                 f"and createdTime >= '{start.isoformat()}' and createdTime <= '{end.isoformat()}' "
+                 f"and trashed = false")
+        
         res = service.files().list(q=query, fields="files(id, createdTime)", orderBy="createdTime").execute()
         files = res.get('files', [])
 
@@ -87,11 +85,11 @@ def fetch_weekly_data():
             fh.seek(0)
             raw_data = fh.read().decode('utf-8-sig').splitlines()
             
-            # 1行目の市場環境データを保存
+            # 1行目の市場環境データ
             metadata_line = raw_data[0] if raw_data else "No Metadata"
             market_metadatas.append({'Date': market_date, 'Metadata': metadata_line})
             
-            # 2行目以降の銘柄データを読み込み
+            # データ本体
             df = pd.read_csv(io.StringIO("\n".join(raw_data[1:])))
             for col in REQUIRED_COLS:
                 if col not in df.columns: df[col] = "不明"
@@ -109,26 +107,21 @@ def analyze_detailed_trend(dfs, metadatas):
     if not dfs: return None
     
     print("=== Phase 2: トレンド集計フェーズ ===")
-    # 銘柄ごとの出現頻度をベースにする
     all_raw = pd.concat(dfs, ignore_index=True)
     trend_df = all_raw.groupby('銘柄').size().reset_index(name='出現回数')
     
-    # 市場環境行の箱を用意
     market_row = {'銘柄': '### MARKET_ENVIRONMENT ###', '出現回数': '-'}
 
     for df, meta in zip(dfs, metadatas):
         date = meta['Date']
-        # 市場環境データを価格列の位置に挿入
         market_row[f'価格_{date}'] = meta['Metadata']
         
-        # 銘柄データを結合
         daily_data = df.set_index('銘柄').drop(columns=['Date']).add_suffix(f'_{date}')
         trend_df = trend_df.merge(daily_data, on='銘柄', how='left')
 
-    # 市場環境行を最上部に追加
     result = pd.concat([pd.DataFrame([market_row]), trend_df], ignore_index=True)
 
-    # ソート処理（最新の売上成長率順）
+    # ソート処理
     latest_date = dfs[-1]['Date'].iloc[0] if isinstance(dfs[-1]['Date'], pd.Series) else dfs[-1]['Date']
     sort_col = f'売上成長(%)_{latest_date}'
     
@@ -148,7 +141,6 @@ def upload_result_to_drive(file_path):
     file_metadata = {'name': file_name, 'parents': [summary_folder_id]}
     media = MediaFileUpload(file_path, mimetype='text/csv')
     
-    # Summaryフォルダ内に同名ファイルがあるか確認
     query = f"'{summary_folder_id}' in parents and name = '{file_name}' and trashed = false"
     res = service.files().list(q=query).execute()
     files = res.get('files', [])
@@ -162,7 +154,7 @@ def upload_result_to_drive(file_path):
 
 if __name__ == "__main__":
     if not all([CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN, PARENT_FOLDER_ID]):
-        print("❌ 認証情報が不足しています。")
+        print("❌ 認証情報不足")
         sys.exit(1)
 
     weekly_data, metadatas = fetch_weekly_data()
@@ -173,4 +165,4 @@ if __name__ == "__main__":
             trend_result.to_csv(output_file, index=False, encoding='utf-8-sig')
             upload_result_to_drive(output_file)
     else:
-        print("⚠️ 有効データなし")
+        print("⚠️ データなし")
