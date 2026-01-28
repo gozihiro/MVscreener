@@ -32,7 +32,8 @@ def fetch_latest_summary():
     done = False
     while not done: _, done = downloader.next_chunk()
     fh.seek(0)
-    return pd.read_csv(fh), files[0]['name']
+    # dtype=str で読み込み、後で個別に数値変換することで型エラーを防止
+    return pd.read_csv(fh, dtype=str), files[0]['name']
 
 def create_intelligence_report(df):
     # 日付列の抽出
@@ -57,115 +58,119 @@ def create_intelligence_report(df):
         })
 
     # --- 2. 有望銘柄の動的スコアリング ---
+    # 市場環境行を除外
     stocks = df[df['銘柄'] != '### MARKET_ENVIRONMENT ###'].copy()
     ranked_list = []
+    
     for _, row in stocks.iterrows():
-        # 5日間の価格をリスト化
-        prices = [pd.to_numeric(row.get(f'価格_{d}'), errors='coerce') for d in dates]
-        prices = [p for p in prices if pd.notnull(p)]
+        # 価格データの数値化
+        prices = []
+        for d in dates:
+            p_val = pd.to_numeric(row.get(f'価格_{d}'), errors='coerce')
+            if pd.notnull(p_val):
+                prices.append(p_val)
         
-        if len(prices) < 2: continue # 1日しか出ていないものは除外（変化を追うため）
+        if len(prices) < 2: continue # 変化を追うため、2日以上出現した銘柄のみ
 
-        # 変化の指標
-        volatility = (max(prices) - min(prices)) / min(prices) if prices else 1.0
-        is_tight = volatility < 0.07 # 7%以内
-        is_improving = prices[-1] >= prices[0] # 初日より価格が維持または上昇
+        # タイトネス判定（直近の値幅が収束しているか）
+        volatility = (max(prices) - min(prices)) / min(prices)
+        is_tight = volatility < 0.08 # 8%以内をタイトと定義
         
-        # スコア計算
-        persistence = row.get('出現回数', 0)
+        # 出現回数と成長率の数値化（ここで型エラーを防止）
+        persistence = pd.to_numeric(row.get('出現回数', 0), errors='coerce') or 0
         growth = pd.to_numeric(row.get(f'売上成長(%)_{latest_date}'), errors='coerce') or 0
         
-        score = (persistence * 25) + (growth * 0.3)
-        if is_tight: score += 40
-        if "超優秀" in str(row.get(f'成長性判定_{latest_date}')): score += 50
+        # スコアリング（定着率、成長率、収束度を重視）
+        score = (float(persistence) * 30.0) + (float(growth) * 0.5)
+        if is_tight: score += 50.0 # VCP兆候への強力な加点
+        if "超優秀" in str(row.get(f'成長性判定_{latest_date}')): score += 60.0
         
         ranked_list.append({
             'ticker': row['銘柄'],
             'score': score,
-            'persistence': persistence,
+            'persistence': int(persistence),
             'is_tight': is_tight,
             'growth': growth,
             'pattern': row.get(f'パターン_{latest_date}', '不明'),
-            'price_change': ((prices[-1]/prices[0])-1)*100 if prices else 0
+            'price_change': ((prices[-1]/prices[0])-1)*100
         })
     
     top_stocks = sorted(ranked_list, key=lambda x: x['score'], reverse=True)[:5]
 
-    # --- 3. チャート作成 (複数描画) ---
-    # チャート1: 市場環境トレンド
+    # --- 3. チャート作成 ---
+    # チャート1: 市場環境（A/D比と売り抜け日）
     fig1 = make_subplots(specs=[[{"secondary_y": True}]])
     fig1.add_trace(go.Scatter(x=dates, y=[m['ad'] for m in market_history], name="A/D比", line=dict(width=4, color='dodgerblue')), secondary_y=False)
     fig1.add_trace(go.Bar(x=dates, y=[m['dist'] for m in market_history], name="売り抜け日", opacity=0.3, marker_color='red'), secondary_y=True)
-    fig1.update_layout(title="📈 市場環境：A/D比と供給（売り抜け日）の相関", height=400)
+    fig1.update_layout(title="📈 市場の質：A/D比の推移と供給圧力", height=450, template="plotly_white")
 
-    # チャート2: 有望銘柄の「タイトネス」比較
+    # チャート2: ボラティリティ収束比較
     fig2 = go.Figure()
     for s in top_stocks:
-        p_history = [pd.to_numeric(stocks[stocks['銘柄']==s['ticker']][f'価格_{d}'].values[0], errors='coerce') for d in dates]
+        p_history = []
+        for d in dates:
+            p_val = pd.to_numeric(stocks[stocks['銘柄']==s['ticker']][f'価格_{d}'].values[0], errors='coerce')
+            p_history.append(p_val)
+        
         base_p = next((p for p in p_history if pd.notnull(p)), None)
         if base_p:
             norm_p = [((p/base_p)-1)*100 if pd.notnull(p) else None for p in p_history]
             fig2.add_trace(go.Scatter(x=dates, y=norm_p, name=s['ticker'], mode='lines+markers'))
-    fig2.update_layout(title="📉 選抜5銘柄の相対価格推移（VCP収束の確認）", yaxis_title="変化率 (%)", height=400)
+    fig2.update_layout(title="📉 有望株のタイトネス比較（週初比 %）", yaxis_title="変化率 (%)", height=450, template="plotly_white")
 
-    # --- 4. 生成されるレポート (HTML) ---
+    # --- 4. HTMLレポート生成 ---
     report_html = f"""
     <html>
     <head>
         <meta charset='utf-8'>
         <style>
-            body {{ font-family: 'Helvetica Neue', Arial, sans-serif; line-height: 1.7; color: #333; max-width: 1000px; margin: auto; padding: 40px; background: #f4f7f6; }}
-            .card {{ background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 30px; }}
-            h1, h2 {{ color: #2c3e50; border-bottom: 2px solid #eee; padding-bottom: 10px; }}
-            .status-box {{ display: flex; justify-content: space-around; background: #2c3e50; color: white; padding: 20px; border-radius: 8px; }}
-            .insight {{ background: #e8f4fd; border-left: 5px solid #3498db; padding: 15px; font-style: italic; }}
-            .rank-item {{ border-bottom: 1px solid #eee; padding: 15px 0; }}
-            .badge {{ background: #27ae60; color: white; padding: 2px 8px; border-radius: 4px; font-size: 12px; }}
+            body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; max-width: 1100px; margin: auto; padding: 20px; background-color: #f8f9fa; }}
+            .card {{ background: white; padding: 25px; border-radius: 10px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); margin-bottom: 25px; }}
+            h1 {{ color: #2c3e50; text-align: center; border-bottom: 3px solid #3498db; padding-bottom: 10px; }}
+            h2 {{ color: #2980b9; border-left: 5px solid #2980b9; padding-left: 15px; }}
+            .insight-box {{ background: #eef7fd; border-left: 5px solid #3498db; padding: 20px; margin: 15px 0; border-radius: 0 5px 5px 0; }}
+            .rank-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }}
+            .rank-card {{ border: 1px solid #e1e8ed; padding: 15px; border-radius: 8px; position: relative; }}
+            .badge {{ background: #2ecc71; color: white; padding: 3px 10px; border-radius: 20px; font-size: 0.8em; }}
+            .badge-vcp {{ background: #f1c40f; color: #333; }}
         </style>
     </head>
     <body>
-        <h1>📊 週次：市場環境と銘柄の深層分析</h1>
+        <h1>📊 週次・深層投資判断レポート</h1>
         
         <div class="card">
-            <h2>🌍 市場環境の変遷とGeminiの洞察</h2>
-            <div class="status-box">
-                <div>最新A/D比: <b>{market_history[-1]['ad']:.2f}</b></div>
-                <div>売り抜け日: <b>{market_history[-1]['dist']}日</b></div>
-                <div>安値から: <b>{market_history[-1]['low_days']}日目</b></div>
+            <h2>🌍 市場環境の「変化」に対するGeminiの洞察</h2>
+            <div class="insight-box">
+                {generate_market_insight(market_history)}
             </div>
-            <p></p>
-            <div class="insight">
-                <b>🔍 市場の「質の変化」への洞察:</b><br>
-                {self_generate_insight(market_history)}
-            </div>
-        </div>
-
-        <div class="card">
-            <h2>🏆 注目銘柄ランキング（定着率・収束重視）</h2>
-            <p>※1日のスナップショットではなく、週を通じてリストに残り続け、かつ値動きがタイト（VCP）な銘柄を上位に選出しています。</p>
-            {"".join([f'''
-            <div class="rank-item">
-                <b>{i+1}. {s['ticker']}</b> <span class="badge">定着率: {s['persistence']}/5日</span> 
-                { " <span class='badge' style='background:#f1c40f; color:black;'>VCP兆候</span>" if s['is_tight'] else "" }
-                <ul>
-                    <li><b>テクニカル洞察:</b> 5日間の値幅変動が {abs(s['price_change']):.1f}% 以内に抑えられており、{s['pattern']} の中で機関投資家の「静かな買い」が推測されます。</li>
-                    <li><b>ファンダメンタルズ:</b> 最新の売上成長率は {s['growth']:.1f}%。リストへの高い定着率は、一時的なニュースではなくトレンドとしての強さを示唆しています。</li>
-                </ul>
-            </div>
-            ''' for i, s in enumerate(top_stocks)])}
-        </div>
-
-        <div class="card">
-            <h2>📊 チャート解説と視覚的分析</h2>
             {fig1.to_html(full_html=False, include_plotlyjs='cdn')}
-            <div class="insight">
-                <b>💡 グラフ1の読み方:</b> A/D比（青線）が上昇し、売り抜け日（赤棒）が減少している状態が最強の買いシグナルです。
-                逆に「安値からの日数」が増えているのにA/D比が低下している場合は、上昇のエネルギーが枯渇している「チャーニング（空回り）」を警戒してください。
+            <p><b>💡 グラフの読み方と洞察:</b> 青いライン（A/D比）が右肩上がりで、赤いバー（売り抜け日）が低い水準を維持しているのが理想です。
+               もし売り抜け日が増えているのに、安値からの日数が進んでいる場合は、<b>「機関投資家が上昇を利用して持ち株を処分している」</b>リスクを示唆します。</p>
+        </div>
+
+        <div class="card">
+            <h2>🏆 注目銘柄ランキング：定着率とVCP重視</h2>
+            <div class="rank-grid">
+                {"".join([f'''
+                <div class="rank-card">
+                    <h3>第{i+1}位: {s['ticker']}</h3>
+                    <p><span class="badge">定着率: {s['persistence']}/5日</span> 
+                    { "<span class='badge badge-vcp'>VCP兆候</span>" if s['is_tight'] else "" }</p>
+                    <p><b>成長性:</b> 売上成長 {s['growth']:.1f}%<br>
+                    <b>パターン:</b> {s['pattern']}<br>
+                    <b>週次推移:</b> 週初比 {s['price_change']:+.2f}%</p>
+                    <p style="font-size: 0.9em; color: #666;"><b>【洞察】</b> 5日間のリスト維持は強い支持の証拠です。価格推移がフラットに近いほど、機関投資家の買い集めが完了し、爆発的上昇の準備が整っている可能性を示唆します。</p>
+                </div>
+                ''' for i, s in enumerate(top_stocks)])}
             </div>
-            <br>
+        </div>
+
+        <div class="card">
+            <h2>📉 有望株のタイトネス解析チャート</h2>
             {fig2.to_html(full_html=False, include_plotlyjs='cdn')}
-            <div class="insight">
-                <b>💡 グラフ2の読み方:</b> 各銘柄の価格推移を週初を0%として比較しています。線が水平に近く、かつ細かく上下している銘柄は、ミネルヴィニ氏の言う「タイトネス」が形成されており、次のブレイクアウトの準備が整っている可能性が高いです。
+            <div class="insight-box">
+                <b>💡 ボラティリティ収束の洞察:</b> ミネルヴィニ流の「タイトネス」は、このグラフで線が「水平」に近い銘柄に現れます。
+                上昇後に価格が崩れず、狭いレンジで推移している銘柄は、売り圧力が枯渇しており、最小の買いで新高値を抜ける準備ができています。
             </div>
         </div>
     </body>
@@ -173,24 +178,27 @@ def create_intelligence_report(df):
     """
     return report_html
 
-def self_generate_insight(history):
-    """市場データの変化から洞察を生成するロジック"""
+def generate_market_insight(history):
+    """市場データの「変化」からGeminiの視点で洞察を生成"""
     start = history[0]
     end = history[-1]
     
-    insight = ""
-    # A/D比の変化
-    if end['ad'] > start['ad']:
-        insight += f"・A/D比が {start['ad']:.2f} から {end['ad']:.2f} へ改善。市場の広がりが強まっており、買いの質が向上しています。<br>"
-    else:
-        insight += f"・A/D比が低下傾向にあります。指数の上昇に対して個別銘柄の追随が弱まっており、選別色を強める必要があります。<br>"
-
-    # 売り抜けと安値からの日数
-    if end['dist'] > start['dist']:
-        insight += f"・安値から {end['low_days']} 日が経過しましたが、売り抜け日が {end['dist']} 日に増加。上昇の初期段階としては供給（売り）がやや強すぎます。<br>"
-    elif end['low_days'] > start['low_days'] and end['dist'] == start['dist']:
-        insight += f"・安値から {end['low_days']} 日目。売り抜け日が増えていないことは、上昇トレンドが機関投資家にサポートされている健全な証拠です。<br>"
+    # 売り抜け日数と経過日数の変化
+    dist_change = end['dist'] - start['dist']
+    days_passed = end['low_days'] - start['low_days']
     
+    insight = f"<b>📅 分析期間の推移:</b> 安値から {start['low_days']}日目 → {end['low_days']}日目への遷移<br><br>"
+    
+    # 洞察ロジック
+    if end['ad'] > start['ad'] and dist_change <= 0:
+        insight += "🟢 <b>【極めて健全】</b> 市場の広がり（A/D比）が改善し、かつ供給（売り抜け日）が増えていません。上昇トレンドの質が非常に高く、積極的にリスクを取れる局面です。"
+    elif dist_change > 0 and days_passed > 0:
+        insight += f"🟡 <b>【注意】</b> 安値から日数が進むにつれ、売り抜け日が {end['dist']}日に増加しました。上昇は続いていますが、機関投資家の利益確定売りが入り始めています。"
+    elif end['ad'] < start['ad']:
+        insight += "🔴 <b>【警戒】</b> 指数の動きに対してA/D比が低下しています。一部の大型株のみが指数を牽引しており、個別株の「買いの質」は低下傾向にあります。銘柄選別をより厳しくすべきです。"
+    else:
+        insight += "⚪ <b>【中立】</b> 指標に大きな変化はありません。現在のトレンドが維持されていますが、ブレイクアウトの成功率を注視してください。"
+
     return insight
 
 def upload_to_drive(content, filename):
