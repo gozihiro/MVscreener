@@ -1,14 +1,13 @@
-name: MV Weekly Screener Analysis
+name: MV Weekly Intelligence Analysis
 
 on:
-  workflow_dispatch: # 手動実行用
+  workflow_dispatch:
   schedule:
-    - cron: '0 23 * * 5' # 毎週土曜朝 8:00 (JST) 実行（金曜 23:00 UTC）
+    - cron: '0 23 * * 5' # 土曜朝 8:00 JST
 
 jobs:
   analyze:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -21,9 +20,9 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas google-api-python-client google-auth-httplib2 google-auth-oauthlib plotly
+          pip install pandas google-api-python-client google-auth-httplib2 google-auth-oauthlib plotly google-generativeai
 
-      - name: Run Phase 1 (Collect Data & Create Trend CSV)
+      - name: Run Phase 1 (Data Integration)
         env:
           CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
           CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
@@ -32,20 +31,19 @@ jobs:
           SUMMARY_FOLDER_ID: ${{ secrets.SUMMARY_FOLDER_ID }}
         run: python MVpreAnalysis.py
 
-      - name: Run Phase 2 (Generate Interactive HTML Report)
+      - name: Run Phase 2 (Gemini Intelligence Report)
         env:
           CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
           CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
           REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
-          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }} # Phase 2では読み取りに使用
           SUMMARY_FOLDER_ID: ${{ secrets.SUMMARY_FOLDER_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python MVweeklyReport.py
 
-      - name: Upload local copies as Artifacts
+      - name: Upload Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: analysis-results
+          name: intelligence-report
           path: |
-            weekly_detailed_trend.csv
             weekly_report.html
