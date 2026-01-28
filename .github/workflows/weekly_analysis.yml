@@ -1,44 +1,51 @@
-name: Weekly Persistence Analysis (Strict)
+name: MV Weekly Screener Analysis
 
 on:
+  workflow_dispatch: # 手動実行用
   schedule:
-    # 毎週土曜日 JST 07:15 (UTC 金曜 22:15)
-    - cron: '15 22 * * 5'
-  workflow_dispatch:
+    - cron: '0 23 * * 5' # 毎週土曜朝 8:00 (JST) 実行（金曜 23:00 UTC）
 
 jobs:
   analyze:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install
-        run: pip install pandas google-api-python-client google-auth-httplib2 google-auth-oauthlib
-      - name: Run Weekly Analysis
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas google-api-python-client google-auth-httplib2 google-auth-oauthlib plotly
+
+      - name: Run Phase 1 (Collect Data & Create Trend CSV)
         env:
           CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
           CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
           REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
-          SUMMARY_FOLDER_ID: ${{ secrets.SUMMARY_FOLDER_ID }} # これを追加
-        run: python MVpreAnalysis.py # ファイル名を指定
-      - name: Upload
-        uses: actions/upload-artifact@v4
-        with:
-          name: weekly-summary
-          path: weekly_persistence_summary.csv
-      - name: Run Phase 2 Analysis
+          SUMMARY_FOLDER_ID: ${{ secrets.SUMMARY_FOLDER_ID }}
+        run: python MVpreAnalysis.py
+
+      - name: Run Phase 2 (Generate Interactive HTML Report)
         env:
           CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
           CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
           REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }} # Phase 2では読み取りに使用
           SUMMARY_FOLDER_ID: ${{ secrets.SUMMARY_FOLDER_ID }}
         run: python MVweeklyReport.py
 
-      - name: Upload Analysis Report
+      - name: Upload local copies as Artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: weekly-investment-report
-          path: weekly_investment_report.md
+          name: analysis-results
+          path: |
+            weekly_detailed_trend.csv
+            weekly_report.html
