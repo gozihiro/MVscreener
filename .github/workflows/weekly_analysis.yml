@@ -16,11 +16,11 @@ jobs:
           python-version: '3.11'
       - name: Install
         run: pip install pandas google-api-python-client google-auth-httplib2 google-auth-oauthlib
-      - name: Run
+      - name: Run Weekly Analysis
         env:
-          CLIENT_ID: ${{ secrets.CLIENT_ID }}
-          CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
-          REFRESH_TOKEN: ${{ secrets.REFRESH_TOKEN }}
+          CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
         run: python MVpreAnalysis.py # ファイル名を指定
       - name: Upload
