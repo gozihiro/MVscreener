@@ -3,11 +3,11 @@ import sys
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
-from plotly.subplots import make_subplots
 import io
 import re
+import math
 from datetime import datetime
-from google import genai # 最新の SDK
+from google import genai
 from google.genai import types
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -25,67 +25,62 @@ def get_drive_service():
     return build('drive', 'v3', credentials=creds)
 
 def get_latest_non_empty(row, base_col, dates):
-    """最新の日付から遡って、有効な値を返す（パターン欠損防止）"""
+    """最新から遡って有効な値を返す。すべて無効なら'データ不足'を返す"""
     for d in reversed(dates):
         val = str(row.get(f"{base_col}_{d}", ""))
         if val and val not in ["－", "-", "不明", "nan", "None"]:
             return val
-    return "不明"
+    return "データ不足"
 
 def ask_gemini_comprehensive_analysis(market_history, top_stocks, universe_stats):
-    """最新の google-genai SDK を使用して分析を行う"""
+    """制限の緩い gemini-1.5-flash を使用してクォータエラーを回避"""
     if not GEMINI_API_KEY: return "Gemini API Key Error"
     
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
-        model_id = "gemini-2.0-flash" # 2026年現在の主力モデル（Gemini 3 相当の推論能力）
+        # 無料枠で最も安定しているモデルを指定
+        model_id = "gemini-1.5-flash" 
 
         market_text = "\n".join([f"- {m['date']}: {m['raw']}" for m in market_history])
-        stocks_text = "\n".join([f"- {s['ticker']}: 定着{s['persistence']}日, 週次騰落:{s['change']:+.1f}%, 成長:{s['growth']}%, パターン:{s['pattern']}" for s in top_stocks])
+        stocks_text = "\n".join([f"- {s['ticker']}: 定着{s['persistence']}日, 週次騰落:{s['change']:+.1f}%, 成長:{s['growth']}, パターン:{s['pattern']}" for s in top_stocks])
 
         prompt = f"""
-        あなたはミネルヴィニとエルダー博士の視点を持つプロアナリストです。
-        全銘柄の統計と上位銘柄を比較し、市場の『真の姿』を浮き彫りにしてください。
+        あなたはプロのアナリストです。全銘柄の統計と上位銘柄を比較し、市場の深層を分析してください。
 
-        ### 1. 市場環境
+        ### 市場環境
         {market_text}
 
-        ### 2. スクリーニング母集団の統計（全数調査結果）
+        ### 母集団の統計
         {universe_stats}
 
-        ### 3. 上位選出銘柄（リーダー群）
+        ### 上位リーダー群
         {stocks_text}
 
-        ### 分析指示
-        1. 【母集団とリーダーの比較】: 全銘柄の分布に対し、上位銘柄がどう突出しているか（RS）を断定してください。
-        2. 【需給の質】: 3日以上定着している銘柄数やパターンの意味を、機関投資家の動きと絡めて解説してください。
-        3. 【個別銘柄の急所】: 上位5銘柄がなぜ頂点にいるのか、全銘柄の中での立ち位置を踏まえ分析してください。
-        4. 【来週の指針】: Gemini 3の高度推論に基づき、月曜からの姿勢を具体的に提示してください。
-        ※日本語、HTML形式（<h3>, <b>, <br>）で出力。
+        ### 指示
+        1. 【母集団分析】: 全体の中で上位5銘柄がいかに特異で強いか(RS)を評価。
+        2. 【需給】: 定着日数が3日以上の銘柄の希少性と意味を解説。
+        3. 【戦略】: 月曜からの具体的なトレード姿勢。
+        日本語、HTML形式（<h3>, <b>, <br>）で出力。
         """
         
-        response = client.models.generate_content(
-            model=model_id,
-            contents=prompt
-        )
+        response = client.models.generate_content(model=model_id, contents=prompt)
         return response.text.replace('```html', '').replace('```', '')
     except Exception as e:
-        return f"Gemini分析エラー: {str(e)}"
+        return f"Gemini分析エラー (クォータ制限等の可能性): {str(e)}"
 
 def create_intelligence_report(df):
     date_cols = sorted([c for c in df.columns if '価格_' in c])
     dates = [c.split('_')[-1] for c in date_cols]
     latest_date = dates[-1]
 
-    # --- 1. 市場解析 ---
     market_row = df[df['銘柄'] == '### MARKET_ENVIRONMENT ###'].iloc[0]
     market_history = [{'date': d, 'raw': str(market_row.get(f'価格_{d}', ""))} for d in dates]
 
-    # --- 2. 銘柄解析（全数調査） ---
     stocks = df[df['銘柄'] != '### MARKET_ENVIRONMENT ###'].copy()
     analysis_list = []
     
     for _, row in stocks.iterrows():
+        # 価格の取得と数値化
         prices = []
         for d in dates:
             p_val = pd.to_numeric(row.get(f'価格_{d}'), errors='coerce')
@@ -93,49 +88,59 @@ def create_intelligence_report(df):
         
         if not prices: continue
 
-        persistence = int(pd.to_numeric(row.get('出現回数', 0), errors='coerce') or 0)
-        weekly_change = ((prices[-1] / prices[0]) - 1) * 100 if prices[0] != 0 else 0
-        latest_growth = float(pd.to_numeric(get_latest_non_empty(row, "売上成長(%)", dates), errors='coerce') or 0)
-        final_pattern = get_latest_non_empty(row, "パターン", dates)
+        # --- 数値の安全な算出 ---
+        persistence = float(pd.to_numeric(row.get('出現回数', 0), errors='coerce') or 0)
         
-        # 定着日数を最優先（100点/日）とした堅牢なスコアリング
-        score = (persistence * 100.0) + (weekly_change * 1.0) + (latest_growth * 0.5)
+        # 週次騰落率 (NaNなら0)
+        weekly_change = 0.0
+        if len(prices) >= 2:
+            weekly_change = ((prices[-1] / prices[0]) - 1) * 100
+        if math.isnan(weekly_change): weekly_change = 0.0
+
+        # 成長率 (NaNなら0)
+        growth_str = get_latest_non_empty(row, "売上成長(%)", dates)
+        growth_val = float(pd.to_numeric(growth_str, errors='coerce') or 0.0)
+        
+        # --- 【重要】ソート不全の解決策：圧倒的な重み付け ---
+        # 1. 定着日数が最優先（1万倍）
+        # 2. 騰落率が次点（100倍）
+        # 3. 成長率は補助（1倍）
+        # すべてを float で計算し、NaNを排除
+        score = (persistence * 10000.0) + (weekly_change * 100.0) + (growth_val * 1.0)
         
         analysis_list.append({
-            'ticker': row['銘柄'], 'score': score, 'persistence': persistence,
-            'change': weekly_change, 'growth': latest_growth, 'pattern': final_pattern,
+            'ticker': row['銘柄'], 
+            'score': score, 
+            'persistence': int(persistence),
+            'change': weekly_change, 
+            'growth': growth_str if growth_str != "データ不足" else "N/A", 
+            'pattern': get_latest_non_empty(row, "パターン", dates),
             'prices': prices
         })
     
     analysis_df = pd.DataFrame(analysis_list)
     
-    # --- 3. 全銘柄の統計 ---
+    # 統計情報の生成
     p_dist = analysis_df['persistence'].value_counts().sort_index().to_dict()
-    universe_stats = f"""
-    - 総スクリーニング通過銘柄数: {len(analysis_df)}件
-    - 定着日数の分布: {p_dist}
-    - 全体の平均週次騰落率: {analysis_df['change'].mean():.2f}%
-    - 全体の平均売上成長率: {analysis_df['growth'].mean():.1f}%
-    - 主要パターン分布: {analysis_df['pattern'].value_counts().head(5).to_dict()}
-    """
+    universe_stats = f"通過数: {len(analysis_df)}, 定着分布: {p_dist}, 平均騰落: {analysis_df['change'].mean():.2f}%"
 
-    # 上位5銘柄選出
-    top_stocks = sorted(analysis_list, key=lambda x: x['score'], reverse=True)[:5]
+    # --- ソートの実行 ---
+    # スコアで降順、スコアが同じなら騰落率で降順
+    analysis_df = analysis_df.sort_values(by=['score', 'change'], ascending=False)
+    top_stocks = analysis_df.head(5).to_dict('records')
     
-    # 【修正】関数名を正しく呼び出し
     gemini_insight = ask_gemini_comprehensive_analysis(market_history, top_stocks, universe_stats)
 
-    # --- 4. チャート生成 ---
+    # チャート生成
     fig2 = px.scatter(
         analysis_df, x="persistence", y="change", text="ticker",
-        size=[10]*len(analysis_df), color="growth",
+        color="persistence",
         labels={"persistence": "定着日数", "change": "週次騰落率(%)"},
-        title="📈 全銘柄分析：定着日数 vs パフォーマンス（母集団の分布）"
+        title="📈 全銘柄：定着日数 vs パフォーマンス"
     )
     fig2.update_traces(textposition='top center')
     fig2.update_layout(height=600, template="plotly_white")
 
-    # --- 5. HTML構築 ---
     report_html = f"""
     <html>
     <head><meta charset='utf-8'><style>
@@ -147,9 +152,9 @@ def create_intelligence_report(df):
         .badge {{ background: #e74c3c; color: white; padding: 4px 10px; border-radius: 5px; font-weight: bold; font-size: 0.9em; }}
     </style></head>
     <body>
-        <h1>📊 週次・全銘柄網羅的分析レポート (Gemini 3対応)</h1>
+        <h1>📊 週次・戦略深層レポート</h1>
         <div class="card">
-            <h2>🧠 母集団統計に基づく深層インサイト</h2>
+            <h2>🧠 Gemini 分析インサイト</h2>
             <div class="insight-box">{gemini_insight}</div>
         </div>
         <div class="card">
@@ -166,7 +171,7 @@ def create_intelligence_report(df):
             </div>
         </div>
         <div class="card">
-            <h2>📊 市場の分布：全銘柄プロット</h2>
+            <h2>📊 市場の分布</h2>
             {fig2.to_html(full_html=False, include_plotlyjs='cdn')}
         </div>
     </body></html>
@@ -201,5 +206,5 @@ if __name__ == "__main__":
     trend_df = pd.read_csv(fh, dtype=str)
     
     html_report = create_intelligence_report(trend_df)
-    report_filename = res['files'][0]['name'].replace('weekly_detailed_trend', 'intelligence_v2026').replace('.csv', '.html')
+    report_filename = res['files'][0]['name'].replace('weekly_detailed_trend', 'intelligence_v2.1').replace('.csv', '.html')
     upload_to_drive(html_report, report_filename)
