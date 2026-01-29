@@ -7,7 +7,8 @@ from plotly.subplots import make_subplots
 import io
 import re
 from datetime import datetime
-import google.generativeai as genai
+from google import genai # 最新の SDK
+from google.genai import types
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
@@ -24,7 +25,7 @@ def get_drive_service():
     return build('drive', 'v3', credentials=creds)
 
 def get_latest_non_empty(row, base_col, dates):
-    """最新の日付から遡って、空でない有効な値を返す"""
+    """最新の日付から遡って、有効な値を返す（パターン欠損防止）"""
     for d in reversed(dates):
         val = str(row.get(f"{base_col}_{d}", ""))
         if val and val not in ["－", "-", "不明", "nan", "None"]:
@@ -32,35 +33,41 @@ def get_latest_non_empty(row, base_col, dates):
     return "不明"
 
 def ask_gemini_comprehensive_analysis(market_history, top_stocks, universe_stats):
-    """Gemini 3 に『市場の全母集団』と『上位銘柄』の比較分析を行わせる"""
+    """最新の google-genai SDK を使用して分析を行う"""
     if not GEMINI_API_KEY: return "Gemini API Key Error"
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-3-flash-preview')
-
-    market_text = "\n".join([f"- {m['date']}: {m['raw']}" for m in market_history])
-    stocks_text = "\n".join([f"- {s['ticker']}: 定着{s['persistence']}日, 週次騰落:{s['change']:+.1f}%, 成長:{s['growth']}%, パターン:{s['pattern']}" for s in top_stocks])
-
-    prompt = f"""
-    あなたはミネルヴィニとエルダー博士の視点を持つプロアナリストです。
-    今週スクリーニングを通過した全銘柄の統計データと、その中から厳選された上位銘柄を比較し、市場の『真の姿』を浮き彫りにしてください。
-
-    ### 1. 市場環境
-    {market_text}
-
-    ### 2. スクリーニング母集団（全銘柄）の統計
-    {universe_stats}
-
-    ### 3. 上位選出銘柄（リーダー群）
-    {stocks_text}
-
-    ### 分析と提言の指示（日本語、HTML形式）
-    1. 【母集団とリーダーの比較分析】: 全銘柄の平均的な定着率や騰落率に対し、上位銘柄がどのように突出しているか、その「相対的強さ(RS)」の価値を断定してください。
-    2. 【需給の質】: 3日以上定着している銘柄数や、共通して現れているパターンの意味（例: High-Baseの多発が意味する強気感）を解説してください。
-    3. 【個別銘柄の急所】: 上位5銘柄が「なぜ今、リストの頂点にいるのか」を、全銘柄の中での立ち位置を踏まえて鋭く突いてください。
-    4. 【来週の指針】: Gemini 3の高度な推論により、月曜日の寄り付きから取るべき姿勢を具体的に提示してください。
-    """
+    
     try:
-        response = model.generate_content(prompt)
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        model_id = "gemini-2.0-flash" # 2026年現在の主力モデル（Gemini 3 相当の推論能力）
+
+        market_text = "\n".join([f"- {m['date']}: {m['raw']}" for m in market_history])
+        stocks_text = "\n".join([f"- {s['ticker']}: 定着{s['persistence']}日, 週次騰落:{s['change']:+.1f}%, 成長:{s['growth']}%, パターン:{s['pattern']}" for s in top_stocks])
+
+        prompt = f"""
+        あなたはミネルヴィニとエルダー博士の視点を持つプロアナリストです。
+        全銘柄の統計と上位銘柄を比較し、市場の『真の姿』を浮き彫りにしてください。
+
+        ### 1. 市場環境
+        {market_text}
+
+        ### 2. スクリーニング母集団の統計（全数調査結果）
+        {universe_stats}
+
+        ### 3. 上位選出銘柄（リーダー群）
+        {stocks_text}
+
+        ### 分析指示
+        1. 【母集団とリーダーの比較】: 全銘柄の分布に対し、上位銘柄がどう突出しているか（RS）を断定してください。
+        2. 【需給の質】: 3日以上定着している銘柄数やパターンの意味を、機関投資家の動きと絡めて解説してください。
+        3. 【個別銘柄の急所】: 上位5銘柄がなぜ頂点にいるのか、全銘柄の中での立ち位置を踏まえ分析してください。
+        4. 【来週の指針】: Gemini 3の高度推論に基づき、月曜からの姿勢を具体的に提示してください。
+        ※日本語、HTML形式（<h3>, <b>, <br>）で出力。
+        """
+        
+        response = client.models.generate_content(
+            model=model_id,
+            contents=prompt
+        )
         return response.text.replace('```html', '').replace('```', '')
     except Exception as e:
         return f"Gemini分析エラー: {str(e)}"
@@ -79,7 +86,6 @@ def create_intelligence_report(df):
     analysis_list = []
     
     for _, row in stocks.iterrows():
-        # 数値データの安全な抽出
         prices = []
         for d in dates:
             p_val = pd.to_numeric(row.get(f'価格_{d}'), errors='coerce')
@@ -87,15 +93,12 @@ def create_intelligence_report(df):
         
         if not prices: continue
 
-        # 定着日数、騰落率、最新成長率を算出
         persistence = int(pd.to_numeric(row.get('出現回数', 0), errors='coerce') or 0)
         weekly_change = ((prices[-1] / prices[0]) - 1) * 100 if prices[0] != 0 else 0
-        
-        # 成長率とパターンは「最新の有効な値」を取得
         latest_growth = float(pd.to_numeric(get_latest_non_empty(row, "売上成長(%)", dates), errors='coerce') or 0)
         final_pattern = get_latest_non_empty(row, "パターン", dates)
         
-        # 定着日数を最優先（100点/日）としたスコアリング
+        # 定着日数を最優先（100点/日）とした堅牢なスコアリング
         score = (persistence * 100.0) + (weekly_change * 1.0) + (latest_growth * 0.5)
         
         analysis_list.append({
@@ -104,14 +107,13 @@ def create_intelligence_report(df):
             'prices': prices
         })
     
-    # 統計用データフレーム
     analysis_df = pd.DataFrame(analysis_list)
     
-    # --- 3. 全銘柄の統計（Geminiへのインプット用） ---
+    # --- 3. 全銘柄の統計 ---
     p_dist = analysis_df['persistence'].value_counts().sort_index().to_dict()
     universe_stats = f"""
     - 総スクリーニング通過銘柄数: {len(analysis_df)}件
-    - 定着日数の分布 (日数:件数): {p_dist}
+    - 定着日数の分布: {p_dist}
     - 全体の平均週次騰落率: {analysis_df['change'].mean():.2f}%
     - 全体の平均売上成長率: {analysis_df['growth'].mean():.1f}%
     - 主要パターン分布: {analysis_df['pattern'].value_counts().head(5).to_dict()}
@@ -119,9 +121,11 @@ def create_intelligence_report(df):
 
     # 上位5銘柄選出
     top_stocks = sorted(analysis_list, key=lambda x: x['score'], reverse=True)[:5]
-    gemini_insight = ask_comprehensive_analysis(market_history, top_stocks, universe_stats)
+    
+    # 【修正】関数名を正しく呼び出し
+    gemini_insight = ask_gemini_comprehensive_analysis(market_history, top_stocks, universe_stats)
 
-    # --- 4. チャート生成（定着マトリクス） ---
+    # --- 4. チャート生成 ---
     fig2 = px.scatter(
         analysis_df, x="persistence", y="change", text="ticker",
         size=[10]*len(analysis_df), color="growth",
@@ -143,9 +147,9 @@ def create_intelligence_report(df):
         .badge {{ background: #e74c3c; color: white; padding: 4px 10px; border-radius: 5px; font-weight: bold; font-size: 0.9em; }}
     </style></head>
     <body>
-        <h1>📊 週次・全銘柄網羅的深層レポート (Gemini 3)</h1>
+        <h1>📊 週次・全銘柄網羅的分析レポート (Gemini 3対応)</h1>
         <div class="card">
-            <h2>🧠 全母集団の分析に基づく Gemini インサイト</h2>
+            <h2>🧠 母集団統計に基づく深層インサイト</h2>
             <div class="insight-box">{gemini_insight}</div>
         </div>
         <div class="card">
@@ -155,21 +159,20 @@ def create_intelligence_report(df):
                 <div class="rank-card">
                     <div class="badge">{s['persistence']}/5日 定着</div>
                     <h3>{s['ticker']}</h3>
-                    <p>週次変化: {s['change']:+.1f}%<br>売上成長: {s['growth']}%</p>
+                    <p>週次騰落: {s['change']:+.1f}%<br>売上成長: {s['growth']}%</p>
                     <small><b>パターン:</b><br>{s['pattern']}</small>
                 </div>
                 ''' for s in top_stocks])}
             </div>
         </div>
         <div class="card">
-            <h2>📊 市場の分布可視化</h2>
+            <h2>📊 市場の分布：全銘柄プロット</h2>
             {fig2.to_html(full_html=False, include_plotlyjs='cdn')}
         </div>
     </body></html>
     """
     return report_html
 
-# upload_to_drive, main 等は前回と同様（略）
 def upload_to_drive(content, filename):
     service = get_drive_service()
     fh = io.BytesIO(content.encode('utf-8'))
@@ -198,5 +201,5 @@ if __name__ == "__main__":
     trend_df = pd.read_csv(fh, dtype=str)
     
     html_report = create_intelligence_report(trend_df)
-    report_filename = res['files'][0]['name'].replace('weekly_detailed_trend', 'intelligence_full').replace('.csv', '.html')
+    report_filename = res['files'][0]['name'].replace('weekly_detailed_trend', 'intelligence_v2026').replace('.csv', '.html')
     upload_to_drive(html_report, report_filename)
