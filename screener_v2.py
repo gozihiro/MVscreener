@@ -52,47 +52,85 @@ def upload_to_drive(file_path):
         log(f">> ❌ Driveアップロード失敗: {e}")
 
 def get_market_health_summary():
-    """【強化版】市場環境判定：FTD判定と売り抜け日カウントの統合"""
-    log(">> ステップ1: 市場環境の判定を開始...")
+    """
+    【2026実戦仕様】市場環境判定：
+    FTD無効化ロジック、売り抜け日優先判定、SMA50フィルターを統合。
+    """
+    log(">> ステップ1: 指数データ解析による市場環境の厳密判定を開始...")
     try:
+        # 過去60日分のS&P500データを取得
         idx = yf.download("^GSPC", period="60d", progress=False, auto_adjust=True)
         if idx.empty: return "判定不能", 0, 0
-        if isinstance(idx.columns, pd.MultiIndex): idx.columns = idx.columns.get_level_values(0)
         
-        c, v = idx['Close'].squeeze(), idx['Volume'].squeeze()
+        # yfinanceのマルチインデックス対策
+        if isinstance(idx.columns, pd.MultiIndex):
+            idx.columns = idx.columns.get_level_values(0)
+        
+        c = idx['Close'].squeeze()
+        v = idx['Volume'].squeeze()
         changes = c.pct_change()
         
-        # 1. 売り抜け日 (Distribution Days) - 過去25日
+        # --- 1. 売り抜け日 (Distribution Days) のカウント ---
+        # 過去25取引日において「価格下落 かつ 出来高増」の日を数える
         dist_days = sum(1 for i in range(1, 26) if c.iloc[-i] < c.iloc[-i-1] and v.iloc[-i] > v.iloc[-i-1])
         
-        # 2. 直近最安値の特定 (20日窓)
-        recent_low_idx = c.rolling(window=20).apply(lambda x: x.argmin()).iloc[-1]
-        days_since_low = len(c) - 1 - (len(c) - 20 + recent_low_idx)
+        # --- 2. ラリーの起点（直近最安値）の特定 ---
+        # 過去20日の中での最安値を「ラリー開始点」の候補とする
+        window_20 = c.tail(20)
+        low_val = window_20.min()
+        # 最安値が何日前かを特定
+        days_since_low = len(window_20) - 1 - window_20.argmin()
         
-        # 3. FTD (Follow-Through Day) 判定
+        # --- 3. FTD (Follow-Through Day) の探索と有効性チェック ---
         ftd_found = False
-        if days_since_low >= 4:
-            for i in range(int(days_since_low), 3, -1):
-                if changes.iloc[-i] >= 0.017 and v.iloc[-i] > v.iloc[-i-1]:
-                    ftd_found = True
-                    break
+        rally_failed = False
         
-        # 4. ステータス決定
+        if days_since_low > 0:
+            # 【重要】安値更新チェック
+            # ラリー開始後に、その安値を一度でも下回っていたら「ラリー失敗」
+            prices_since_low = c.tail(int(days_since_low) + 1)
+            if (prices_since_low.iloc[1:] < low_val).any():
+                rally_failed = True
+            
+            # ラリーが失敗していなければ、4日目以降にFTDがあったか探す
+            if not rally_failed and days_since_low >= 4:
+                # 安値から4日目〜現在までの期間をスキャン
+                for i in range(int(days_since_low), 3, -1):
+                    # 条件: 前日比+1.7%以上 かつ 出来高が前日を上回る
+                    if changes.iloc[-i] >= 0.017 and v.iloc[-i] > v.iloc[-i-1]:
+                        ftd_found = True
+                        break
+
+        # --- 4. 最終ステータスの決定 (優先順位を厳守) ---
         sma50 = c.rolling(50).mean().iloc[-1]
-        if ftd_found and c.iloc[-1] > sma50:
+        curr_price = c.iloc[-1]
+        
+        # A. 最優先：上昇確定 (FTDあり 且つ SMA50の上)
+        if ftd_found and curr_price > sma50:
             status = "🚀 上昇確定 (Confirmed Uptrend)"
-        elif days_since_low > 0 and not ftd_found:
-            status = "🟡 ラリー試行中 (Rally Attempt)"
+            
+        # B. 次点：下落警戒 (売り抜け日が6日以上)
+        # ※たとえFTDが出ていても、売り抜け日が多ければこちらを優先して警告する
         elif dist_days >= 6:
             status = "🔴 下落警戒 (Market Under Pressure)"
-        else:
-            status = "警戒" if c.iloc[-1] < sma50 else "強気"
             
+        # C. ラリー継続中 (安値を割っておらず、FTD待ちの状態)
+        elif days_since_low > 0 and not rally_failed and not ftd_found:
+            status = "🟡 ラリー試行中 (Rally Attempt)"
+            
+        # D. ラリー失敗または安値更新中
+        else:
+            if curr_price < sma50:
+                status = "📉 下落トレンド (Downtrend)"
+            else:
+                status = "🔄 調整中 (Correcting)"
+                
         return status, dist_days, int(days_since_low)
-    except Exception as e:
-        log(f"FTD判定エラー: {e}")
-        return "エラー", 0, 0
 
+    except Exception as e:
+        log(f"❌ 市場判定エラー: {e}")
+        return "エラー停止", 0, 0
+        
 def get_full_universe():
     """SECから主要取引所（Nasdaq, NYSE, NYSE American）の銘柄リストのみを取得"""
     log(">> ステップ2: 主要市場（Nasdaq/NYSE）の銘柄リストを取得中...")
