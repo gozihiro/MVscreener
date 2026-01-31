@@ -99,6 +99,7 @@ def create_intelligence_report(df):
             .metric-row:last-child {{ border-bottom: none; }}
             .priority-hint {{ font-size: 0.85em; color: #7f8c8d; font-style: italic; margin-bottom: 15px; }}
             .pattern-tag {{ color: #95a5a6; font-size: 0.8em; font-style: italic; border-top: 1px solid #eee; padding-top: 10px; }}
+            .explanation-box {{ background: #eef7fd; border-left: 5px solid #3498db; padding: 15px; margin-top: 15px; font-size: 0.9em; line-height: 1.6; }}
         </style>
     </head>
     <body>
@@ -114,6 +115,11 @@ def create_intelligence_report(df):
                 <h2 style="margin-top:0;">🌍 市場環境の変遷 (Fact-Check)</h2>
                 <div class="market-grid" id="market-stats"></div>
                 <div id="chart-market" style="height:380px;"></div>
+                <div class="explanation-box">
+                    <b>📈 需給診断のポイント:</b><br>
+                    ・<b>A/D比（青線）：</b> 市場全体の「健康度」を示します。上昇は個別株への広範な買いを、下落は一部銘柄への資金集中または全体的な投げ売りを意味します。<br>
+                    ・<b>売り抜け日（赤棒）：</b> 指数の下落と出来高増が重なった「機関投資家の出口戦略」の痕跡です。過去25取引日で累積され、6〜7日を超えると「下落警戒」となり、あらゆるブレイクアウトの成功率が激減します。
+                </div>
             </div>
 
             <div id="dynamic-rankings-area"></div>
@@ -121,6 +127,12 @@ def create_intelligence_report(df):
             <div class="card">
                 <h2 style="margin-top:0;">📈 銘柄収束解析（出現日数 vs 騰落率）</h2>
                 <div id="chart-scatter" style="height:600px;"></div>
+                <div class="explanation-box">
+                    <b>📈 プロットの解釈（ミネルヴィニ・エルダー視点）:</b><br>
+                    ・<b>右側（高定着）：</b> 機関投資家の強力なサポートがあり、スクリーニングに残り続けている「本命」です。<br>
+                    ・<b>右上（リーダー）：</b> 地合いが悪い中でも新高値を追うRS（相対的強さ）の塊。次の強気相場を牽引する主役候補です。<br>
+                    ・<b>右下（タイト）：</b> 定着しているが値動きが静かな銘柄。ミネルヴィニ流のVCPやHigh-Baseの完成間近である可能性が高く、ボラティリティが「死んだ」後に爆発的なブレイクアウトが期待できます。
+                </div>
             </div>
             
             <div style="text-align:center; color:#95a5a6; font-size:0.85em; padding: 50px;">
