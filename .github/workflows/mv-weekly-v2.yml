@@ -1,9 +1,9 @@
-name: MV Intelligence Analysis V2 (Dynamic/Multi-Timeframe)
+name: MV Intelligence Analysis V2 (Full Pipeline)
 
 on:
   workflow_dispatch:  # 手動実行用
   schedule:
-    - cron: '30 7 * * 1-6' # 日本時間 16:30 (V1の30分後に設定)
+    - cron: '30 7 * * 1-6' # 日本時間 16:30
 
 jobs:
   analyze_v2:
@@ -22,11 +22,21 @@ jobs:
           python -m pip install --upgrade pip
           pip install pandas google-api-python-client google-auth-httplib2 google-auth-oauthlib plotly
 
-      - name: Run Phase 2 (V2 Logic)
+      # --- Phase 1: 過去CSVをスキャンして時系列サマリを生成 ---
+      - name: Run Phase 1 (Pre-Analysis)
+        env:
+          CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+          SUMMARY_FOLDER_ID: ${{ secrets.SUMMARY_FOLDER_ID }}
+        run: python MVpreAnalysis.py
+
+      # --- Phase 2: V2ロジックによるインタラクティブHTMLの生成 ---
+      - name: Run Phase 2 (V2 Dynamic Reporting)
         env:
           CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
           CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
           REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
           SUMMARY_FOLDER_ID: ${{ secrets.SUMMARY_FOLDER_ID }}
-        # V2専用のスクリプトを指定
         run: python MVweeklyReport_V2.py
