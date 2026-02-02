@@ -5,6 +5,7 @@ import requests
 import time
 import random
 import sys
+from datetime import datetime
 # --- Added for OAuth 2.0 Drive Upload ---
 import os
 from google.oauth2.credentials import Credentials
@@ -24,7 +25,7 @@ def log(msg):
     """GitHubのログ画面に即座に出力する（バッファリング回避）"""
     print(msg, flush=True)
 
-def upload_to_drive(file_path):
+def upload_to_drive(file_path, drive_file_name):
     """OAuth 2.0を使用してGoogle Driveへアップロード"""
     client_id = os.environ.get('CLIENT_ID')
     client_secret = os.environ.get('CLIENT_SECRET')
@@ -44,10 +45,10 @@ def upload_to_drive(file_path):
             token_uri="https://oauth2.googleapis.com/token"
         )
         service = build('drive', 'v3', credentials=creds)
-        file_metadata = {'name': file_path, 'parents': [folder_id]}
+        file_metadata = {'name': drive_file_name, 'parents': [folder_id]}
         media = MediaFileUpload(file_path, mimetype='text/csv', resumable=True)
         service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-        log(f">> ✅ Google Driveアップロード成功")
+        log(f">> ✅ Google Driveアップロード成功: {drive_file_name}")
     except Exception as e:
         log(f">> ❌ Driveアップロード失敗: {e}")
 
@@ -273,7 +274,6 @@ def run_screener():
     ad_ratio = round(advances/max(1, declines), 2)
     special_msg = " 【!】内部改善中：先行銘柄をチェックせよ" if ad_ratio >= 1.5 and mkt_status in ["🟡 ラリー試行中 (Rally Attempt)", "🔴 下落警戒 (Market Under Pressure)"] else ""
     
-    # ここを mkt_status ではなく market_summary に戻します
     final_mkt_summary = f"{market_summary} | A/D比:{ad_ratio} (↑{advances} ↓{declines}){special_msg}"
 
     df_final = pd.DataFrame(results if results else [{"結果": "的中なし"}])
@@ -282,7 +282,11 @@ def run_screener():
         df_final.to_csv(f, index=False)
     
     log(f"=== 全工程完了。最終的中数: {len(results)} ===")
-    upload_to_drive(LOCAL_SAVE_PATH)
+    
+    # --- 日付付きのファイル名を生成してDriveへアップロード ---
+    date_str = datetime.now().strftime('%Y%m%d')
+    drive_file_name = f"minervini_final_results_{date_str}.csv"
+    upload_to_drive(LOCAL_SAVE_PATH, drive_file_name)
 
 if __name__ == "__main__":
     run_screener()
