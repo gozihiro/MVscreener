@@ -2,9 +2,9 @@ name: Minervini Screener V2 (Strict)
 
 on:
   schedule:
-    # 日本時間 月〜金 の 朝 07:05 に実行 (UTC 22:05)
-    # 00分を避けることで、GitHub側の混雑によるスキップを回避しやすくします
-    - cron: '5 22 * * 0-4'
+    # UTC 22:05 (月〜金) 実行 ＝ 日本時間 07:05 (火〜土) 実行
+    # これにより、月曜〜金曜の米国市場クローズ後のデータをすべて網羅できます
+    - cron: '5 22 * * 1-5'
   workflow_dispatch:
 
 jobs:
