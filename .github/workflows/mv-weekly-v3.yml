@@ -1,0 +1,44 @@
+name: MV Intelligence Analysis V3 (Full Pipeline)
+
+on:
+  workflow_dispatch:  # 手動実行用
+  schedule:
+    # 日本時間 16:30 (UTC 07:30) に実行
+    # screener_v3.py の完了後に実行されるよう設定
+    - cron: '30 7 * * 1-6'
+
+jobs:
+  analyze_v3:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas google-api-python-client google-auth-httplib2 google-auth-oauthlib plotly
+
+      # --- Phase 1: 過去CSVをスキャンして時系列サマリを生成（発射台スコア対応版） ---
+      - name: Run Phase 1 (Pre-Analysis V2)
+        env:
+          CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+          SUMMARY_FOLDER_ID: ${{ secrets.SUMMARY_FOLDER_ID }}
+        run: python MVpreAnalysisV2.py
+
+      # --- Phase 2: V3ロジックによる発射台スコア対応レポートの生成 ---
+      - name: Run Phase 2 (V3 Dynamic Reporting)
+        env:
+          CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
+          SUMMARY_FOLDER_ID: ${{ secrets.SUMMARY_FOLDER_ID }}
+        run: python MVweeklyReport_V3.py
