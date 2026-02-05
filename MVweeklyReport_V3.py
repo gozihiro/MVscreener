@@ -55,7 +55,7 @@ def create_intelligence_report(df):
     stocks_json = []
     for _, row in stock_rows.iterrows():
         prices = {}
-        opens = {}
+        opens = {}  # 陽線判定用に始値を追加
         patterns = {}
         growths = {}
         launchpads = {}
@@ -63,7 +63,7 @@ def create_intelligence_report(df):
             p_val = pd.to_numeric(row.get(f'価格_{d}'), errors='coerce')
             prices[f"2026/{d}"] = float(p_val) if pd.notnull(p_val) else None
             
-            # 始値データの取得（陽線判定用）
+            # 始値データを抽出
             o_val = pd.to_numeric(row.get(f'始値_{d}'), errors='coerce')
             opens[f"2026/{d}"] = float(o_val) if pd.notnull(o_val) else None
 
@@ -191,21 +191,11 @@ def create_intelligence_report(df):
                     const change = pricesInPeriod.length >= 2 ? ((pricesInPeriod[pricesInPeriod.length - 1] / pricesInPeriod[0]) - 1) * 100 : 0;
                     const vol = pricesInPeriod.length >= 2 ? ((Math.max(...pricesInPeriod) - Math.min(...pricesInPeriod)) / Math.min(...pricesInPeriod)) * 100 : 0;
                     
-                    // 【改善】最新日のスコアと陽線判定
+                    // 【改善】最新日のスコアと厳密な陽線判定 (Close > Open)
                     const latestLaunchpad = s.launchpads[latestDate] || 0;
                     const latestClose = s.prices[latestDate];
                     const latestOpen = s.opens[latestDate];
-                    
-                    // 最低条件：陽線（終値 > 始値）
-                    let isBullish = false;
-                    if (latestOpen && latestOpen !== 0) {{
-                        isBullish = latestClose > latestOpen;
-                    }} else {{
-                        // 始値データがない場合のフォールバック：前日比プラス
-                        const prevDate = periodLen > 1 ? targetDates[periodLen - 2] : null;
-                        const prevClose = prevDate ? s.prices[prevDate] : null;
-                        isBullish = prevClose !== null && latestClose > prevClose;
-                    }}
+                    const isBullish = (latestOpen && latestOpen > 0) ? (latestClose > latestOpen) : false;
 
                     let growth = 0, pattern = "－", launchpad = 0;
                     let anyStrict = false;
@@ -229,10 +219,16 @@ def create_intelligence_report(df):
                     return 0;
                 }};
 
+                // Ready to Launch の基本フィルター（陽線かつ最新スコアあり）
+                const readyBase = analyzed.filter(x => x.isBullish && x.latestLaunchpad > 0);
+
                 const sections = [
-                    // 【修正】最新陽線を最低条件とし、優先順位をご指示通りに設定
-                    {{ title: "🚀 Ready to Launch (即応銘柄) TOP 5", hint: "優先順位: 最新発射台 ➔ 定着 ➔ 成長 ➔ 騰落率", 
-                        data: analyzed.filter(x => x.isBullish && x.latestLaunchpad > 0).sort(getSorter(['latestLaunchpad','persistence','growth','change'], [-1,-1,-1,-1])).slice(0,5) }},
+                    {{ title: "🚀 Ready to Launch (即応銘柄) 総合 TOP 5", hint: "優先順位: 最新発射台 ➔ 定着 ➔ 成長 ➔ 騰落率", 
+                        data: [...readyBase].sort(getSorter(['latestLaunchpad','persistence','growth','change'], [-1,-1,-1,-1])).slice(0,5) }},
+                    {{ title: "🚀 Ready to Launch - High-Base (Strict)", hint: "優先順位: 最新発射台 ➔ 定着 ➔ 低ボラ ➔ 成長", 
+                        data: readyBase.filter(x => x.anyStrict).sort(getSorter(['latestLaunchpad','persistence','vol','growth'], [-1,-1,1,-1])).slice(0,5) }},
+                    {{ title: "🚀 Ready to Launch - VCP", hint: "優先順位: 最新発射台 ➔ 定着 ➔ 低ボラ ➔ 成長", 
+                        data: readyBase.filter(x => x.pattern.includes('VCP')).sort(getSorter(['latestLaunchpad','persistence','vol','growth'], [-1,-1,1,-1])).slice(0,5) }},
                     {{ title: "🏆 総合・サバイバルリーダー", hint: "優先順位: 定着 ➔ 騰落率 ➔ 成長 ➔ 低ボラ", 
                         data: [...analyzed].sort(getSorter(['persistence','change','growth','vol'], [-1,-1,-1,1])).slice(0,5) }},
                     {{ title: "📐 High-Base (Strict) リーダー", hint: "優先順位: 定着 ➔ 発射台 ➔ 低ボラ ➔ 騰落率 ➔ 成長", 
@@ -246,7 +242,7 @@ def create_intelligence_report(df):
                 let html = "";
                 sections.forEach(sec => {{
                     html += `<div class="card"><h2 class="section-title">${{sec.title}}</h2><p class="priority-hint">${{sec.hint}}</p><div class="rank-grid">`;
-                    if (sec.data.length === 0) html += "<p>対象なし</p>";
+                    if (sec.data.length === 0) html += "<p>対象なし（陽線かつ最新スコアが必要）</p>";
                     sec.data.forEach((s, idx) => {{
                         html += `
                         <div class="rank-card">
@@ -265,15 +261,12 @@ def create_intelligence_report(df):
                 }});
                 document.getElementById('dynamic-rankings-area').innerHTML = html;
 
-                // 4. チャート更新
                 const chartData = targetDates.map(d => data.market.find(m => m.date===d)).filter(m => m.valid);
                 Plotly.newPlot('chart-market', [
                     {{ x: chartData.map(m => m.date), y: chartData.map(m => m.ad), name: 'A/D比', type: 'scatter', line: {{width:4, color:'#3498db'}} }},
                     {{ x: chartData.map(m => m.date), y: chartData.map(m => m.dist), name: '売り抜け', type: 'bar', opacity: 0.3, marker: {{color:'#e74c3c'}}, yaxis: 'y2' }}
                 ], {{ yaxis: {{title: 'A/D比'}}, yaxis2: {{overlaying:'y', side:'right', title: '売り抜け日'}}, margin: {{t:20, b:40, l:50, r:50}}, template: 'plotly_white' }});
 
-                // 【抜本修正】高スコア(10)＝濃い赤、低スコア(0)＝薄い黄を数値で厳密に指定。
-                // さらに関連データを昇順ソートして、高スコアのドットを最後に描画（＝最前面）
                 const scatterData = [...analyzed].sort((a, b) => a.launchpad - b.launchpad);
                 Plotly.newPlot('chart-scatter', [{{
                     x: scatterData.map(x => x.persistence), y: scatterData.map(x => x.change), text: scatterData.map(x => x.ticker),
@@ -281,7 +274,6 @@ def create_intelligence_report(df):
                     marker: {{ 
                         size: 14, 
                         color: scatterData.map(x => x.launchpad), 
-                        // カスタムカラースケール: 0➔薄黄, 1➔濃赤
                         colorscale: [[0, 'rgb(255, 255, 204)'], [1, 'rgb(189, 0, 38)']], 
                         reversescale: false,
                         cmin: 0, cmax: 10,
