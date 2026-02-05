@@ -27,7 +27,7 @@ def get_drive_service():
     return build('drive', 'v3', credentials=creds)
 
 def create_intelligence_report(df):
-    """HTMLレポート生成（JS演算エンジン V3搭載）"""
+    """HTMLレポート生成（JS演算エンジン搭載）"""
     # 1. 日付列の特定 (MM/DD 形式)
     date_cols = sorted([c for c in df.columns if '価格_' in c])
     dates = [c.split('_')[-1] for c in date_cols]
@@ -37,32 +37,27 @@ def create_intelligence_report(df):
     market_data = []
     for d in dates:
         meta = str(market_row.get(f'価格_{d}', ""))
-        # REPORT_METADATA というキーワードが含まれているか判定
         if "REPORT_METADATA" in meta:
             ad_match = re.search(r'A/D比:\s*([\d\.]+)', meta)
             dist_match = re.search(r'売り抜け:\s*(\d+)', meta)
             market_data.append({
                 "date": f"2026/{d}",
-                "status": meta.split('|')[0].replace("REPORT_METADATA,", "").strip() if '|' in meta else "分析中",
+                "status": meta.split('|')[0].replace("REPORT_METADATA,", "").strip() if '|' in meta else "不明",
                 "ad": float(ad_match.group(1)) if ad_match else 1.0,
                 "dist": int(dist_match.group(1)) if dist_match else 0,
                 "valid": True
             })
         else:
-            # 古いヘッダー等が混入している場合は無効データとして扱う
-            market_data.append({
-                "date": f"2026/{d}",
-                "status": "データ収集中",
-                "ad": 1.0,
-                "dist": 0,
-                "valid": False
-            })
+            market_data.append({"date": f"2026/{d}", "status": "データなし", "ad": 1.0, "dist": 0, "valid": False})
 
     # 3. 銘柄データの抽出
     stock_rows = df[df['銘柄'] != '### MARKET_ENVIRONMENT ###'].copy()
     stocks_json = []
     for _, row in stock_rows.iterrows():
-        prices, patterns, growths, launchpads = {}, {}, {}, {}
+        prices = {}
+        patterns = {}
+        growths = {}
+        launchpads = {}
         for d in dates:
             p_val = pd.to_numeric(row.get(f'価格_{d}'), errors='coerce')
             prices[f"2026/{d}"] = float(p_val) if pd.notnull(p_val) else None
@@ -79,20 +74,20 @@ def create_intelligence_report(df):
             "launchpads": launchpads
         })
 
-    # データペイロード
+    # データペイロードの作成
     full_data_payload = {
         "dates": [f"2026/{d}" for d in dates],
         "market": market_data,
         "stocks": stocks_json
     }
 
-    # 4. HTML/JS テンプレート
+    # 4. HTML/JS テンプレート (二重波括弧はJS/CSSの保護用、一重はPythonの埋め込み用)
     html_content = f"""
     <!DOCTYPE html>
     <html lang="ja">
     <head>
         <meta charset="UTF-8">
-        <title>Strategy Intelligence V3</title>
+        <title>Dynamic Strategy Intelligence</title>
         <script src="https://cdn.plot.ly/plotly-2.24.1.min.js"></script>
         <style>
             body {{ font-family: 'Segoe UI', system-ui, sans-serif; background: #f0f4f8; margin: 0; padding: 20px; color: #2c3e50; }}
@@ -131,8 +126,8 @@ def create_intelligence_report(df):
                 <div id="chart-market" style="height:380px;"></div>
                 <div class="explanation-box">
                     <b>📈 需給診断のポイント:</b><br>
-                    ・<b>A/D比（青線）：</b> 市場全体の「健康度」。上昇は個別株への広範な買いを意味します。<br>
-                    ・<b>売り抜け日（赤棒）：</b> 指数下落＋出来高増の「機関投資家の出口戦略」。累積6〜7日で「下落警戒」となります。
+                    ・<b>A/D比（青線）：</b> 市場全体の「健康度」を示します。上昇は個別株への広範な買いを、下落は一部銘柄への資金集中または全体的な投げ売りを意味します。<br>
+                    ・<b>売り抜け日（赤棒）：</b> 指数の下落と出来高増が重なった「機関投資家の出口戦略」の痕跡です。過去25取引日で累積され、6〜7日を超えると「下落警戒」となり、あらゆるブレイクアウトの成功率が激減します。
                 </div>
             </div>
 
@@ -142,8 +137,11 @@ def create_intelligence_report(df):
                 <h2 style="margin-top:0;">📈 銘柄収束解析（出現日数 vs 騰落率）</h2>
                 <div id="chart-scatter" style="height:600px;"></div>
                 <div class="explanation-box">
-                    <b>プロットの解釈（ミネルヴィニ・エルダー視点）:</b><br>
-                    ・<b>色（Score）：</b> オレンジ〜赤が濃いほど、直近の形状が「発射台」として完成していることを示します。
+                    <b>📈 プロットの解釈（ミネルヴィニ・エルダー視点）:</b><br>
+                    ・<b>右側（高定着）：</b> 機関投資家の強力なサポートがあり、スクリーニングに残り続けている「本命」です。<br>
+                    ・<b>右上（リーダー）：</b> 地合いが悪い中でも新高値を追うRS（相対的強さ）の塊。次の強気相場を牽引する主役候補です。<br>
+                    ・<b>右下（タイト）：</b> 定着しているが値動きが静かな銘柄。ミネルヴィニ流のVCPやHigh-Baseの完成間近である可能性が高く、ボラティリティが「死んだ」後に爆発的なブレイクアウトが期待できます。<br>
+                    ・<b>ドットの色（Score）：</b> 赤・オレンジが濃いほど「発射台スコア」が高く、直近のセットアップが完了に近いことを示します。
                 </div>
             </div>
             
@@ -157,7 +155,6 @@ def create_intelligence_report(df):
             const datePicker = document.getElementById('start-date-picker');
             const sortedDates = data.dates;
 
-            // カレンダー設定
             datePicker.min = sortedDates[0].replace(/\//g, '-');
             datePicker.max = sortedDates[sortedDates.length - 1].replace(/\//g, '-');
             datePicker.value = sortedDates[Math.max(0, sortedDates.length - 5)].replace(/\//g, '-');
@@ -184,7 +181,6 @@ def create_intelligence_report(df):
                 // 2. 銘柄集計
                 const analyzed = data.stocks.map(s => {{
                     const pricesInPeriod = targetDates.map(d => s.prices[d]).filter(p => p !== null);
-                    // 1日のみ出現の銘柄も許可（5位まで表示を優先）
                     if (pricesInPeriod.length < 1) return null;
                     
                     const persistence = pricesInPeriod.length;
@@ -192,7 +188,6 @@ def create_intelligence_report(df):
                     const vol = pricesInPeriod.length >= 2 ? ((Math.max(...pricesInPeriod) - Math.min(...pricesInPeriod)) / Math.min(...pricesInPeriod)) * 100 : 0;
                     
                     let growth = 0, pattern = "－", launchpad = 0;
-                    // 最新から遡り、最初の有効なパターンと最大スコアを抽出
                     for(let i = periodLen - 1; i >= 0; i--) {{
                         const d = targetDates[i];
                         if (growth === 0 && s.growths[d]) growth = s.growths[d];
@@ -215,31 +210,29 @@ def create_intelligence_report(df):
                 const sections = [
                     {{ title: "🚀 Ready to Launch (即応銘柄) TOP 5", hint: "発射台 ➔ 定着 ➔ 成長 ➔ 騰落率", 
                         data: [...analyzed].sort(getSorter(['launchpad','persistence','growth','change'], [-1,-1,-1,-1])).slice(0,5) }},
-                    {{ title: "🏆 総合・サバイバルリーダー", hint: "定着 ➔ 騰落率 ➔ 発射台 ➔ 成長 ➔ 低ボラ", 
-                        data: [...analyzed].sort(getSorter(['persistence','change','launchpad','growth','vol'], [-1,-1,-1,-1,1])).slice(0,5), isTotal: true }},
+                    {{ title: "🏆 総合・サバイバルリーダー", hint: "定着 ➔ 騰落率 ➔ 成長 ➔ 低ボラ", 
+                        data: [...analyzed].sort(getSorter(['persistence','change','growth','vol'], [-1,-1,-1,1])).slice(0,5), isTotal: true }},
                     {{ title: "📐 High-Base (Strict) リーダー", hint: "定着 ➔ 発射台 ➔ 低ボラ ➔ 騰落率 ➔ 成長", 
                         data: analyzed.filter(x => x.pattern.includes('Strict')).sort(getSorter(['persistence','launchpad','vol','change','growth'], [-1,-1,1,-1,-1])).slice(0,5) }},
-                    {{ title: "🌀 VCP・収束リーダー", hint: "定着 ➔ 発射台 ➔ 低ボラ ➔ 成長 ➔ 騰落率", 
-                        data: analyzed.filter(x => x.pattern.includes('VCP')).sort(getSorter(['persistence','launchpad','vol','growth','change'], [-1,-1,1,-1,-1])).slice(0,5) }},
-                    {{ title: "⚡ PowerPlay・勢いリーダー", hint: "定着 ➔ 騰落率 ➔ 発射台 ➔ 成長 ➔ 低ボラ", 
-                        data: analyzed.filter(x => x.pattern.includes('PowerPlay')).sort(getSorter(['persistence','change','launchpad','growth','vol'], [-1,-1,-1,-1,1])).slice(0,5) }}
+                    {{ title: "🌀 VCP・収束リーダー", hint: "定着 ➔ 低ボラ ➔ 成長 ➔ 騰落率", 
+                        data: analyzed.filter(x => x.pattern.includes('VCP')).sort(getSorter(['persistence','vol','growth','change'], [-1,1,-1,-1])).slice(0,5) }},
+                    {{ title: "⚡ PowerPlay・勢いリーダー", hint: "定着 ➔ 騰落率 ➔ 成長 ➔ 低ボラ", 
+                        data: analyzed.filter(x => x.pattern.includes('PowerPlay')).sort(getSorter(['persistence','change','growth','vol'], [-1,-1,-1,1])).slice(0,5) }}
                 ];
 
                 let html = "";
                 sections.forEach(sec => {{
-                    html += `<div class="card"><h2 class="section-title">${{sec.title}}</h2><p class="priority-hint">優先順位: ${{sec.hint}}</p><div class="rank-grid">`;
+                    html += `<div class="card"><h2 class="section-title">${{sec.title}}</h2><div class="rank-grid">`;
                     if (sec.data.length === 0) html += "<p>対象なし</p>";
                     sec.data.forEach((s, idx) => {{
                         html += `
                         <div class="rank-card">
-                            ${{sec.isTotal ? `<div class="rank-badge">${{idx+1}}</div>` : ''}}
                             <span class="persistence-tag">${{s.persistence}}日出現</span>
                             <h3 style="margin:5px 0;">${{s.ticker}}</h3>
                             <div class="metric-box">
                                 <div class="metric-row"><span>発射台Score</span> <b class="score-highlight">${{s.launchpad}}</b></div>
                                 <div class="metric-row"><span>期間騰落</span> <b style="color:${{s.change >=0 ? '#e74c3c':'#2980b9'}}">${{s.change.toFixed(1)}}%</b></div>
                                 <div class="metric-row"><span>売上成長</span> <b>${{s.growth}}%</b></div>
-                                <div class="metric-row"><span>値幅(Vol)</span> <b>${{s.vol.toFixed(1)}}%</b></div>
                             </div>
                             <div class="pattern-tag">${{s.pattern}}</div>
                         </div>`;
@@ -248,20 +241,27 @@ def create_intelligence_report(df):
                 }});
                 document.getElementById('dynamic-rankings-area').innerHTML = html;
 
-                // チャート更新 (有効な市場データがある期間のみ)
+                // 4. チャート更新
                 const chartData = targetDates.map(d => data.market.find(m => m.date===d)).filter(m => m.valid);
                 Plotly.newPlot('chart-market', [
                     {{ x: chartData.map(m => m.date), y: chartData.map(m => m.ad), name: 'A/D比', type: 'scatter', line: {{width:4, color:'#3498db'}} }},
                     {{ x: chartData.map(m => m.date), y: chartData.map(m => m.dist), name: '売り抜け', type: 'bar', opacity: 0.3, marker: {{color:'#e74c3c'}}, yaxis: 'y2' }}
                 ], {{ yaxis: {{title: 'A/D比'}}, yaxis2: {{overlaying:'y', side:'right', title: '売り抜け日'}}, margin: {{t:20, b:40, l:50, r:50}}, template: 'plotly_white' }});
 
+                // 収束解析グラフ：色=発射台スコア(高スコア=赤)
                 Plotly.newPlot('chart-scatter', [{{
                     x: analyzed.map(x => x.persistence), y: analyzed.map(x => x.change), text: analyzed.map(x => x.ticker),
                     mode: 'markers+text', textposition: 'top center',
-                    marker: {{ size: 14, color: analyzed.map(x => x.launchpad), colorscale: 'YlOrRd', showscale: true, colorbar: {{title: 'Launchpad Score'}} }}
+                    marker: {{ 
+                        size: 14, 
+                        color: analyzed.map(x => x.launchpad), 
+                        colorscale: 'YlOrRd', 
+                        reversescale: false,
+                        showscale: true, 
+                        colorbar: {{title: 'Score'}} 
+                    }}
                 }}], {{ xaxis: {{title: '出現日数'}}, yaxis: {{title: '期間騰落率(%)'}}, margin: {{t:20, b:40, l:50, r:50}}, template: 'plotly_white' }});
             }}
-
             handleDateChange();
         </script>
     </body>
@@ -274,11 +274,9 @@ def upload_to_drive(content, filename):
     service = get_drive_service()
     fh = io.BytesIO(content.encode('utf-8'))
     media = MediaIoBaseUpload(fh, mimetype='text/html', resumable=True)
-    
     query = f"'{SUMMARY_FOLDER_ID}' in parents and name = '{filename}' and trashed = false"
     res = service.files().list(q=query).execute()
     files = res.get('files', [])
-    
     if files:
         service.files().update(fileId=files[0]['id'], media_body=media).execute()
         print(f"Updated: {filename}")
@@ -289,31 +287,19 @@ def upload_to_drive(content, filename):
 
 if __name__ == "__main__":
     service = get_drive_service()
-    
-    # 最新の週次トレンドCSVを検索
     query = f"'{SUMMARY_FOLDER_ID}' in parents and name contains 'weekly_detailed_trend' and trashed = false"
     res = service.files().list(q=query, fields="files(id, name)", orderBy="createdTime desc").execute()
     if not res.get('files'):
-        print("CSV file not found.")
-        sys.exit(1)
-    
+        print("CSV file not found."); sys.exit(1)
     file_id = res['files'][0]['id']
     csv_name = res['files'][0]['name']
-    
-    # ダウンロード
     request = service.files().get_media(fileId=file_id)
     fh = io.BytesIO()
     downloader = MediaIoBaseDownload(fh, request)
     done = False
-    while not done:
-        _, done = downloader.next_chunk()
-    
+    while not done: _, done = downloader.next_chunk()
     fh.seek(0)
     trend_df = pd.read_csv(fh, dtype=str)
-    
-    # 動的レポート生成
     html_report = create_intelligence_report(trend_df)
-    
-    # アップロード
     report_filename = csv_name.replace('weekly_detailed_trend', 'interactive_ranking').replace('.csv', '.html')
     upload_to_drive(html_report, report_filename)
