@@ -27,7 +27,7 @@ def get_drive_service():
     return build('drive', 'v3', credentials=creds)
 
 def create_intelligence_report(df):
-    """HTMLレポート生成（JS演算エンジン搭載）"""
+    """HTMLレポート生成（既存ロジック・解説・書式を厳密に維持）"""
     # 1. 日付列の特定 (MM/DD 形式)
     date_cols = sorted([c for c in df.columns if '価格_' in c])
     dates = [c.split('_')[-1] for c in date_cols]
@@ -81,7 +81,7 @@ def create_intelligence_report(df):
         "stocks": stocks_json
     }
 
-    # 4. HTML/JS テンプレート (二重波括弧はJS/CSSの保護用、一重はPythonの埋め込み用)
+    # 4. HTML/JS テンプレート
     html_content = f"""
     <!DOCTYPE html>
     <html lang="ja">
@@ -170,7 +170,6 @@ def create_intelligence_report(df):
                 const latestDate = targetDates[periodLen - 1];
                 document.getElementById('period-info').innerHTML = `期間: <b>${{periodLen}}</b> 日間 <br><small>対象: ${{targetDates[0]}} ～ ${{latestDate}}</small>`;
 
-                // 1. 市場環境
                 const mEnd = data.market.find(m => m.date === latestDate);
                 document.getElementById('market-stats').innerHTML = `
                     <div>現状<br><span>${{mEnd.status}}</span></div>
@@ -178,7 +177,6 @@ def create_intelligence_report(df):
                     <div>売り抜け日<br><span>${{mEnd.dist}}日</span></div>
                 `;
 
-                // 2. 銘柄集計
                 const analyzed = data.stocks.map(s => {{
                     const pricesInPeriod = targetDates.map(d => s.prices[d]).filter(p => p !== null);
                     if (pricesInPeriod.length < 1) return null;
@@ -211,7 +209,7 @@ def create_intelligence_report(df):
                     {{ title: "🚀 Ready to Launch (即応銘柄) TOP 5", hint: "発射台 ➔ 定着 ➔ 成長 ➔ 騰落率", 
                         data: [...analyzed].sort(getSorter(['launchpad','persistence','growth','change'], [-1,-1,-1,-1])).slice(0,5) }},
                     {{ title: "🏆 総合・サバイバルリーダー", hint: "定着 ➔ 騰落率 ➔ 成長 ➔ 低ボラ", 
-                        data: [...analyzed].sort(getSorter(['persistence','change','growth','vol'], [-1,-1,-1,1])).slice(0,5), isTotal: true }},
+                        data: [...analyzed].sort(getSorter(['persistence','change','growth','vol'], [-1,-1,-1,1])).slice(0,5) }},
                     {{ title: "📐 High-Base (Strict) リーダー", hint: "定着 ➔ 発射台 ➔ 低ボラ ➔ 騰落率 ➔ 成長", 
                         data: analyzed.filter(x => x.pattern.includes('Strict')).sort(getSorter(['persistence','launchpad','vol','change','growth'], [-1,-1,1,-1,-1])).slice(0,5) }},
                     {{ title: "🌀 VCP・収束リーダー", hint: "定着 ➔ 低ボラ ➔ 成長 ➔ 騰落率", 
@@ -222,11 +220,12 @@ def create_intelligence_report(df):
 
                 let html = "";
                 sections.forEach(sec => {{
-                    html += `<div class="card"><h2 class="section-title">${{sec.title}}</h2><div class="rank-grid">`;
+                    html += `<div class="card"><h2 class="section-title">${{sec.title}}</h2><p class="priority-hint">優先順位: ${{sec.hint}}</p><div class="rank-grid">`;
                     if (sec.data.length === 0) html += "<p>対象なし</p>";
                     sec.data.forEach((s, idx) => {{
                         html += `
                         <div class="rank-card">
+                            <div class="rank-badge">${{idx+1}}</div>
                             <span class="persistence-tag">${{s.persistence}}日出現</span>
                             <h3 style="margin:5px 0;">${{s.ticker}}</h3>
                             <div class="metric-box">
@@ -241,14 +240,12 @@ def create_intelligence_report(df):
                 }});
                 document.getElementById('dynamic-rankings-area').innerHTML = html;
 
-                // 4. チャート更新
                 const chartData = targetDates.map(d => data.market.find(m => m.date===d)).filter(m => m.valid);
                 Plotly.newPlot('chart-market', [
                     {{ x: chartData.map(m => m.date), y: chartData.map(m => m.ad), name: 'A/D比', type: 'scatter', line: {{width:4, color:'#3498db'}} }},
                     {{ x: chartData.map(m => m.date), y: chartData.map(m => m.dist), name: '売り抜け', type: 'bar', opacity: 0.3, marker: {{color:'#e74c3c'}}, yaxis: 'y2' }}
                 ], {{ yaxis: {{title: 'A/D比'}}, yaxis2: {{overlaying:'y', side:'right', title: '売り抜け日'}}, margin: {{t:20, b:40, l:50, r:50}}, template: 'plotly_white' }});
 
-                // 収束解析グラフ：色=発射台スコア(高スコア=赤)
                 Plotly.newPlot('chart-scatter', [{{
                     x: analyzed.map(x => x.persistence), y: analyzed.map(x => x.change), text: analyzed.map(x => x.ticker),
                     mode: 'markers+text', textposition: 'top center',
@@ -257,8 +254,10 @@ def create_intelligence_report(df):
                         color: analyzed.map(x => x.launchpad), 
                         colorscale: 'YlOrRd', 
                         reversescale: false,
+                        cmin: 0,
+                        cmax: 10,
                         showscale: true, 
-                        colorbar: {{title: 'Score'}} 
+                        colorbar: {{title: 'Score', titleside: 'right'}} 
                     }}
                 }}], {{ xaxis: {{title: '出現日数'}}, yaxis: {{title: '期間騰落率(%)'}}, margin: {{t:20, b:40, l:50, r:50}}, template: 'plotly_white' }});
             }}
@@ -270,7 +269,6 @@ def create_intelligence_report(df):
     return html_content
 
 def upload_to_drive(content, filename):
-    """Google Driveへのアップロード（上書き対応）"""
     service = get_drive_service()
     fh = io.BytesIO(content.encode('utf-8'))
     media = MediaIoBaseUpload(fh, mimetype='text/html', resumable=True)
