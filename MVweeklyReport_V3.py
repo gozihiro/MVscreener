@@ -27,7 +27,7 @@ def get_drive_service():
     return build('drive', 'v3', credentials=creds)
 
 def create_intelligence_report(df):
-    """HTMLレポート生成（既存ロジック・解説・書式を厳密に維持）"""
+    """HTMLレポート生成（散布図の配色・レイヤーを抜本修正）"""
     # 1. 日付列の特定 (MM/DD 形式)
     date_cols = sorted([c for c in df.columns if '価格_' in c])
     dates = [c.split('_')[-1] for c in date_cols]
@@ -48,7 +48,7 @@ def create_intelligence_report(df):
                 "valid": True
             })
         else:
-            market_data.append({"date": f"2026/{d}", "status": "データなし", "ad": 1.0, "dist": 0, "valid": False})
+            market_data.append({"date": f"2026/{d}", "status": "データ収集中", "ad": 1.0, "dist": 0, "valid": False})
 
     # 3. 銘柄データの抽出
     stock_rows = df[df['銘柄'] != '### MARKET_ENVIRONMENT ###'].copy()
@@ -74,14 +74,13 @@ def create_intelligence_report(df):
             "launchpads": launchpads
         })
 
-    # データペイロードの作成
     full_data_payload = {
         "dates": [f"2026/{d}" for d in dates],
         "market": market_data,
         "stocks": stocks_json
     }
 
-    # 4. HTML/JS テンプレート (二重波括弧はJS/CSSの保護用、一重はPythonの埋め込み用)
+    # 4. HTML/JS テンプレート
     html_content = f"""
     <!DOCTYPE html>
     <html lang="ja">
@@ -185,20 +184,18 @@ def create_intelligence_report(df):
                     const change = pricesInPeriod.length >= 2 ? ((pricesInPeriod[pricesInPeriod.length - 1] / pricesInPeriod[0]) - 1) * 100 : 0;
                     const vol = pricesInPeriod.length >= 2 ? ((Math.max(...pricesInPeriod) - Math.min(...pricesInPeriod)) / Math.min(...pricesInPeriod)) * 100 : 0;
                     
-                    let growth = 0, launchpad = 0;
-                    let lastValidPattern = "－";
-                    let anyStrict = false; // 期間中に一度でもStrictが出現したか
-
+                    let growth = 0, pattern = "－", launchpad = 0;
+                    let anyStrict = false;
                     for(let i = periodLen - 1; i >= 0; i--) {{
                         const d = targetDates[i];
                         if (growth === 0 && s.growths[d]) growth = s.growths[d];
                         if (s.launchpads[d] > launchpad) launchpad = s.launchpads[d];
                         if (s.patterns[d] && !["", "不明", "－"].includes(s.patterns[d])) {{
-                            if (lastValidPattern === "－") lastValidPattern = s.patterns[d];
+                            if (pattern === "－") pattern = s.patterns[d];
                             if (s.patterns[d].includes('Strict')) anyStrict = true;
                         }}
                     }}
-                    return {{ ticker: s.ticker, persistence, change, vol, growth, pattern: lastValidPattern, anyStrict, launchpad }};
+                    return {{ ticker: s.ticker, persistence, change, vol, growth, pattern, anyStrict, launchpad }};
                 }}).filter(x => x !== null);
 
                 const getSorter = (keys, orders) => (a, b) => {{
@@ -251,15 +248,20 @@ def create_intelligence_report(df):
                     {{ x: chartData.map(m => m.date), y: chartData.map(m => m.dist), name: '売り抜け', type: 'bar', opacity: 0.3, marker: {{color:'#e74c3c'}}, yaxis: 'y2' }}
                 ], {{ yaxis: {{title: 'A/D比'}}, yaxis2: {{overlaying:'y', side:'right', title: '売り抜け日'}}, margin: {{t:20, b:40, l:50, r:50}}, template: 'plotly_white' }});
 
-                // 【最前面表示対応】高スコア(10)＝赤(濃い), 低スコア(0)＝黄(薄い)に固定。スコア昇順ソートで赤を前面に。
+                // 【抜本修正】高スコア(10)＝濃い赤、低スコア(0)＝薄い黄を数値で厳密に指定。
+                // さらに関連データを昇順ソートして、高スコアのドットを最後に描画（＝最前面）
                 const scatterData = [...analyzed].sort((a, b) => a.launchpad - b.launchpad);
                 Plotly.newPlot('chart-scatter', [{{
                     x: scatterData.map(x => x.persistence), y: scatterData.map(x => x.change), text: scatterData.map(x => x.ticker),
                     mode: 'markers+text', textposition: 'top center',
                     marker: {{ 
-                        size: 14, color: scatterData.map(x => x.launchpad), 
-                        colorscale: 'YlOrRd', reversescale: false,
-                        cmin: 0, cmax: 10, showscale: true, 
+                        size: 14, 
+                        color: scatterData.map(x => x.launchpad), 
+                        // カスタムカラースケール: 0➔薄黄, 1➔濃赤
+                        colorscale: [[0, 'rgb(255, 255, 204)'], [1, 'rgb(189, 0, 38)']], 
+                        reversescale: false,
+                        cmin: 0, cmax: 10,
+                        showscale: true, 
                         colorbar: {{title: 'Score', titleside: 'right'}} 
                     }}
                 }}], {{ xaxis: {{title: '出現日数'}}, yaxis: {{title: '期間騰落率(%)'}}, margin: {{t:20, b:40, l:50, r:50}}, template: 'plotly_white' }});
