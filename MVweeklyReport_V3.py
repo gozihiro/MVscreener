@@ -27,7 +27,7 @@ def get_drive_service():
     return build('drive', 'v3', credentials=creds)
 
 def create_intelligence_report(df):
-    """HTMLレポート生成（既存ロジック・解説・書式を厳密に維持）"""
+    """HTMLレポート生成（JS演算エンジン搭載）"""
     # 1. 日付列の特定 (MM/DD 形式)
     date_cols = sorted([c for c in df.columns if '価格_' in c])
     dates = [c.split('_')[-1] for c in date_cols]
@@ -37,18 +37,15 @@ def create_intelligence_report(df):
     market_data = []
     for d in dates:
         meta = str(market_row.get(f'価格_{d}', ""))
-        if "REPORT_METADATA" in meta:
-            ad_match = re.search(r'A/D比:\s*([\d\.]+)', meta)
-            dist_match = re.search(r'売り抜け:\s*(\d+)', meta)
-            market_data.append({
-                "date": f"2026/{d}",
-                "status": meta.split('|')[0].replace("REPORT_METADATA,", "").strip() if '|' in meta else "不明",
-                "ad": float(ad_match.group(1)) if ad_match else 1.0,
-                "dist": int(dist_match.group(1)) if dist_match else 0,
-                "valid": True
-            })
-        else:
-            market_data.append({"date": f"2026/{d}", "status": "データなし", "ad": 1.0, "dist": 0, "valid": False})
+        ad_match = re.search(r'A/D比:\s*([\d\.]+)', meta)
+        dist_match = re.search(r'売り抜け:\s*(\d+)', meta)
+        market_data.append({
+            "date": f"2026/{d}",
+            "status": meta.split('|')[0].strip() if '|' in meta else "不明",
+            "ad": float(ad_match.group(1)) if ad_match else 1.0,
+            "dist": int(dist_match.group(1)) if dist_match else 0,
+            "valid": "REPORT_METADATA" in meta
+        })
 
     # 3. 銘柄データの抽出
     stock_rows = df[df['銘柄'] != '### MARKET_ENVIRONMENT ###'].copy()
@@ -179,7 +176,6 @@ def create_intelligence_report(df):
 
                 const analyzed = data.stocks.map(s => {{
                     const pricesInPeriod = targetDates.map(d => s.prices[d]).filter(p => p !== null);
-                    // 1日出現の銘柄も確実に含める
                     if (pricesInPeriod.length < 1) return null;
                     
                     const persistence = pricesInPeriod.length;
@@ -187,6 +183,7 @@ def create_intelligence_report(df):
                     const vol = pricesInPeriod.length >= 2 ? ((Math.max(...pricesInPeriod) - Math.min(...pricesInPeriod)) / Math.min(...pricesInPeriod)) * 100 : 0;
                     
                     let growth = 0, pattern = "－", launchpad = 0;
+                    // 最新から遡り、最初の有効なパターンを採用
                     for(let i = periodLen - 1; i >= 0; i--) {{
                         const d = targetDates[i];
                         if (growth === 0 && s.growths[d]) growth = s.growths[d];
@@ -247,7 +244,7 @@ def create_intelligence_report(df):
                     {{ x: chartData.map(m => m.date), y: chartData.map(m => m.dist), name: '売り抜け', type: 'bar', opacity: 0.3, marker: {{color:'#e74c3c'}}, yaxis: 'y2' }}
                 ], {{ yaxis: {{title: 'A/D比'}}, yaxis2: {{overlaying:'y', side:'right', title: '売り抜け日'}}, margin: {{t:20, b:40, l:50, r:50}}, template: 'plotly_white' }});
 
-                // 【最重要】スコア順(昇順)にソートしてから描画することで、高スコア(赤)を最後に描画＝最前面にする
+                // 【最重要】高スコアを前面に出すためスコア昇順にソート。10=赤(濃), 0=黄(薄)に固定。
                 const scatterData = [...analyzed].sort((a, b) => a.launchpad - b.launchpad);
                 Plotly.newPlot('chart-scatter', [{{
                     x: scatterData.map(x => x.persistence), y: scatterData.map(x => x.change), text: scatterData.map(x => x.ticker),
@@ -272,7 +269,6 @@ def create_intelligence_report(df):
     return html_content
 
 def upload_to_drive(content, filename):
-    """Google Driveへのアップロード（上書き対応）"""
     service = get_drive_service()
     fh = io.BytesIO(content.encode('utf-8'))
     media = MediaIoBaseUpload(fh, mimetype='text/html', resumable=True)
