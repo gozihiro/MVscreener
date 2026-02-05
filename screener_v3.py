@@ -59,6 +59,10 @@ def calculate_launchpad_score(df, ticker, tags, index_change):
     
     day_range = h_today - l_today
     if day_range == 0: return 0
+
+    # 【重要追加条件】陽線判定：終値が始値以下（陰線または同値）なら、即座に0点として除外
+    if c_today <= o_today:
+        return 0
     
     # --- A. 共通基礎点 (最大6点) ---
     base_score = 0
@@ -72,7 +76,7 @@ def calculate_launchpad_score(df, ticker, tags, index_change):
     
     # 3. No Upper Shadow (上ヒゲ排除)
     upper_shadow = h_today - max(o_today, c_today)
-    if upper_shadow < (day_range * 0.1): base_score += 2
+    if upper_shadow < (day_shadow_val := day_range * 0.1): base_score += 2
 
     # --- B. パターン別ボーナス (最大4点) ---
     bonus_vcp = 0
