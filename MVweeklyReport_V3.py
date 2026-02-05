@@ -81,7 +81,7 @@ def create_intelligence_report(df):
         "stocks": stocks_json
     }
 
-    # 4. HTML/JS テンプレート
+    # 4. HTML/JS テンプレート (二重波括弧はJS/CSSの保護用、一重はPythonの埋め込み用)
     html_content = f"""
     <!DOCTYPE html>
     <html lang="ja">
@@ -179,6 +179,7 @@ def create_intelligence_report(df):
 
                 const analyzed = data.stocks.map(s => {{
                     const pricesInPeriod = targetDates.map(d => s.prices[d]).filter(p => p !== null);
+                    // 1日出現の銘柄も確実に含める
                     if (pricesInPeriod.length < 1) return null;
                     
                     const persistence = pricesInPeriod.length;
@@ -246,16 +247,16 @@ def create_intelligence_report(df):
                     {{ x: chartData.map(m => m.date), y: chartData.map(m => m.dist), name: '売り抜け', type: 'bar', opacity: 0.3, marker: {{color:'#e74c3c'}}, yaxis: 'y2' }}
                 ], {{ yaxis: {{title: 'A/D比'}}, yaxis2: {{overlaying:'y', side:'right', title: '売り抜け日'}}, margin: {{t:20, b:40, l:50, r:50}}, template: 'plotly_white' }});
 
-                // 収束解析グラフ：色=発射台スコア(高スコア=赤/濃)
+                // 【最重要】スコア順(昇順)にソートしてから描画することで、高スコア(赤)を最後に描画＝最前面にする
+                const scatterData = [...analyzed].sort((a, b) => a.launchpad - b.launchpad);
                 Plotly.newPlot('chart-scatter', [{{
-                    x: analyzed.map(x => x.persistence), y: analyzed.map(x => x.change), text: analyzed.map(x => x.ticker),
+                    x: scatterData.map(x => x.persistence), y: scatterData.map(x => x.change), text: scatterData.map(x => x.ticker),
                     mode: 'markers+text', textposition: 'top center',
                     marker: {{ 
                         size: 14, 
-                        color: analyzed.map(x => x.launchpad), 
-                        // 【修正箇所】reversescale: true を指定し、高スコア(10)が赤(濃)となるように反転
+                        color: scatterData.map(x => x.launchpad), 
                         colorscale: 'YlOrRd', 
-                        reversescale: true,
+                        reversescale: false,
                         cmin: 0,
                         cmax: 10,
                         showscale: true, 
@@ -271,6 +272,7 @@ def create_intelligence_report(df):
     return html_content
 
 def upload_to_drive(content, filename):
+    """Google Driveへのアップロード（上書き対応）"""
     service = get_drive_service()
     fh = io.BytesIO(content.encode('utf-8'))
     media = MediaIoBaseUpload(fh, mimetype='text/html', resumable=True)
