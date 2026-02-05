@@ -184,6 +184,13 @@ def create_intelligence_report(df):
                     const change = pricesInPeriod.length >= 2 ? ((pricesInPeriod[pricesInPeriod.length - 1] / pricesInPeriod[0]) - 1) * 100 : 0;
                     const vol = pricesInPeriod.length >= 2 ? ((Math.max(...pricesInPeriod) - Math.min(...pricesInPeriod)) / Math.min(...pricesInPeriod)) * 100 : 0;
                     
+                    // 【改善】最新日のスコアと価格変動を計算（Ready to Launch用）
+                    const latestLaunchpad = s.launchpads[latestDate] || 0;
+                    const prevDate = periodLen > 1 ? targetDates[periodLen - 2] : null;
+                    const latestPrice = s.prices[latestDate];
+                    const prevPrice = prevDate ? s.prices[prevDate] : null;
+                    const isPositiveDay = (prevPrice === null || latestPrice >= prevPrice) ? 1 : 0;
+
                     let growth = 0, pattern = "－", launchpad = 0;
                     let anyStrict = false;
                     for(let i = periodLen - 1; i >= 0; i--) {{
@@ -195,7 +202,10 @@ def create_intelligence_report(df):
                             if (s.patterns[d].includes('Strict')) anyStrict = true;
                         }}
                     }}
-                    return {{ ticker: s.ticker, persistence, change, vol, growth, pattern, anyStrict, launchpad }};
+                    return {{ 
+                        ticker: s.ticker, persistence, change, vol, growth, pattern, anyStrict, 
+                        launchpad, latestLaunchpad, isPositiveDay 
+                    }};
                 }}).filter(x => x !== null);
 
                 const getSorter = (keys, orders) => (a, b) => {{
@@ -207,8 +217,9 @@ def create_intelligence_report(df):
                 }};
 
                 const sections = [
-                    {{ title: "🚀 Ready to Launch (即応銘柄) TOP 5", hint: "発射台 ➔ 定着 ➔ 成長 ➔ 騰落率", 
-                        data: [...analyzed].sort(getSorter(['launchpad','persistence','growth','change'], [-1,-1,-1,-1])).slice(0,5) }},
+                    // Ready to Launch は最新スコアを優先し、かつ陰線銘柄(下落)を排除してソート
+                    {{ title: "🚀 Ready to Launch (即応銘柄) TOP 5", hint: "最新発射台 ➔ 前日比プラス ➔ 定着 ➔ 成長", 
+                        data: analyzed.filter(x => x.latestLaunchpad > 0 && x.isPositiveDay === 1).sort(getSorter(['latestLaunchpad','persistence','growth','change'], [-1,-1,-1,-1])).slice(0,5) }},
                     {{ title: "🏆 総合・サバイバルリーダー", hint: "定着 ➔ 騰落率 ➔ 成長 ➔ 低ボラ", 
                         data: [...analyzed].sort(getSorter(['persistence','change','growth','vol'], [-1,-1,-1,1])).slice(0,5) }},
                     {{ title: "📐 High-Base (Strict) リーダー", hint: "定着 ➔ 発射台 ➔ 低ボラ ➔ 騰落率 ➔ 成長", 
@@ -230,7 +241,7 @@ def create_intelligence_report(df):
                             <span class="persistence-tag">${{s.persistence}}日出現</span>
                             <h3 style="margin:5px 0;">${{s.ticker}}</h3>
                             <div class="metric-box">
-                                <div class="metric-row"><span>発射台Score</span> <b class="score-highlight">${{s.launchpad}}</b></div>
+                                <div class="metric-row"><span>発射台Score</span> <b class="score-highlight">${{sec.title.includes('Ready') ? s.latestLaunchpad : s.launchpad}}</b></div>
                                 <div class="metric-row"><span>期間騰落</span> <b style="color:${{s.change >=0 ? '#e74c3c':'#2980b9'}}">${{s.change.toFixed(1)}}%</b></div>
                                 <div class="metric-row"><span>売上成長</span> <b>${{s.growth}}%</b></div>
                             </div>
