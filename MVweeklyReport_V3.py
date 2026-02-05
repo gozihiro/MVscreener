@@ -27,7 +27,7 @@ def get_drive_service():
     return build('drive', 'v3', credentials=creds)
 
 def create_intelligence_report(df):
-    """HTMLレポート生成（JS演算エンジン搭載）"""
+    """HTMLレポート生成（既存ロジック・解説・書式を厳密に維持）"""
     # 1. 日付列の特定 (MM/DD 形式)
     date_cols = sorted([c for c in df.columns if '価格_' in c])
     dates = [c.split('_')[-1] for c in date_cols]
@@ -37,15 +37,18 @@ def create_intelligence_report(df):
     market_data = []
     for d in dates:
         meta = str(market_row.get(f'価格_{d}', ""))
-        ad_match = re.search(r'A/D比:\s*([\d\.]+)', meta)
-        dist_match = re.search(r'売り抜け:\s*(\d+)', meta)
-        market_data.append({
-            "date": f"2026/{d}",
-            "status": meta.split('|')[0].strip() if '|' in meta else "不明",
-            "ad": float(ad_match.group(1)) if ad_match else 1.0,
-            "dist": int(dist_match.group(1)) if dist_match else 0,
-            "valid": "REPORT_METADATA" in meta
-        })
+        if "REPORT_METADATA" in meta:
+            ad_match = re.search(r'A/D比:\s*([\d\.]+)', meta)
+            dist_match = re.search(r'売り抜け:\s*(\d+)', meta)
+            market_data.append({
+                "date": f"2026/{d}",
+                "status": meta.split('|')[0].replace("REPORT_METADATA,", "").strip() if '|' in meta else "不明",
+                "ad": float(ad_match.group(1)) if ad_match else 1.0,
+                "dist": int(dist_match.group(1)) if dist_match else 0,
+                "valid": True
+            })
+        else:
+            market_data.append({"date": f"2026/{d}", "status": "データなし", "ad": 1.0, "dist": 0, "valid": False})
 
     # 3. 銘柄データの抽出
     stock_rows = df[df['銘柄'] != '### MARKET_ENVIRONMENT ###'].copy()
@@ -123,8 +126,8 @@ def create_intelligence_report(df):
                 <div id="chart-market" style="height:380px;"></div>
                 <div class="explanation-box">
                     <b>📈 需給診断のポイント:</b><br>
-                    ・<b>A/D比（青線）：</b> 市場全体の「健康度」を示します。上昇は個別株への広範な買いを、下落は一部銘柄への資金集中または全体的な投げ売りを意味します。<br>
-                    ・<b>売り抜け日（赤棒）：</b> 指数の下落と出来高増が重なった「機関投資家の出口戦略」の痕跡です。過去25取引日で累積され、6〜7日を超えると「下落警戒」となり、あらゆるブレイクアウトの成功率が激減します。
+                    ・<b>A/D比（青線）：</b> 市場全体の「健康度」。上昇は個別株への広範な買いを、下落は一部銘柄への資金集中または全体的な投げ売りを意味します。<br>
+                    ・<b>売り抜け日（赤棒）：</b> 指数の下落と出来高増が重なった「機関投資家の出口戦略」の痕跡。6〜7日を超えると「下落警戒」となります。
                 </div>
             </div>
 
@@ -182,17 +185,20 @@ def create_intelligence_report(df):
                     const change = pricesInPeriod.length >= 2 ? ((pricesInPeriod[pricesInPeriod.length - 1] / pricesInPeriod[0]) - 1) * 100 : 0;
                     const vol = pricesInPeriod.length >= 2 ? ((Math.max(...pricesInPeriod) - Math.min(...pricesInPeriod)) / Math.min(...pricesInPeriod)) * 100 : 0;
                     
-                    let growth = 0, pattern = "－", launchpad = 0;
-                    // 最新から遡り、最初の有効なパターンを採用
+                    let growth = 0, launchpad = 0;
+                    let lastValidPattern = "－";
+                    let anyStrict = false; // 期間中に一度でもStrictが出現したか
+
                     for(let i = periodLen - 1; i >= 0; i--) {{
                         const d = targetDates[i];
                         if (growth === 0 && s.growths[d]) growth = s.growths[d];
                         if (s.launchpads[d] > launchpad) launchpad = s.launchpads[d];
-                        if (pattern === "－" && s.patterns[d] && !["", "不明", "－"].includes(s.patterns[d])) {{
-                            pattern = s.patterns[d];
+                        if (s.patterns[d] && !["", "不明", "－"].includes(s.patterns[d])) {{
+                            if (lastValidPattern === "－") lastValidPattern = s.patterns[d];
+                            if (s.patterns[d].includes('Strict')) anyStrict = true;
                         }}
                     }}
-                    return {{ ticker: s.ticker, persistence, change, vol, growth, pattern, launchpad }};
+                    return {{ ticker: s.ticker, persistence, change, vol, growth, pattern: lastValidPattern, anyStrict, launchpad }};
                 }}).filter(x => x !== null);
 
                 const getSorter = (keys, orders) => (a, b) => {{
@@ -209,7 +215,7 @@ def create_intelligence_report(df):
                     {{ title: "🏆 総合・サバイバルリーダー", hint: "定着 ➔ 騰落率 ➔ 成長 ➔ 低ボラ", 
                         data: [...analyzed].sort(getSorter(['persistence','change','growth','vol'], [-1,-1,-1,1])).slice(0,5) }},
                     {{ title: "📐 High-Base (Strict) リーダー", hint: "定着 ➔ 発射台 ➔ 低ボラ ➔ 騰落率 ➔ 成長", 
-                        data: analyzed.filter(x => x.pattern.includes('Strict')).sort(getSorter(['persistence','launchpad','vol','change','growth'], [-1,-1,1,-1,-1])).slice(0,5) }},
+                        data: analyzed.filter(x => x.anyStrict).sort(getSorter(['persistence','launchpad','vol','change','growth'], [-1,-1,1,-1,-1])).slice(0,5) }},
                     {{ title: "🌀 VCP・収束リーダー", hint: "定着 ➔ 低ボラ ➔ 成長 ➔ 騰落率", 
                         data: analyzed.filter(x => x.pattern.includes('VCP')).sort(getSorter(['persistence','vol','growth','change'], [-1,1,-1,-1])).slice(0,5) }},
                     {{ title: "⚡ PowerPlay・勢いリーダー", hint: "定着 ➔ 騰落率 ➔ 成長 ➔ 低ボラ", 
@@ -238,25 +244,22 @@ def create_intelligence_report(df):
                 }});
                 document.getElementById('dynamic-rankings-area').innerHTML = html;
 
+                // 4. チャート更新
                 const chartData = targetDates.map(d => data.market.find(m => m.date===d)).filter(m => m.valid);
                 Plotly.newPlot('chart-market', [
                     {{ x: chartData.map(m => m.date), y: chartData.map(m => m.ad), name: 'A/D比', type: 'scatter', line: {{width:4, color:'#3498db'}} }},
                     {{ x: chartData.map(m => m.date), y: chartData.map(m => m.dist), name: '売り抜け', type: 'bar', opacity: 0.3, marker: {{color:'#e74c3c'}}, yaxis: 'y2' }}
                 ], {{ yaxis: {{title: 'A/D比'}}, yaxis2: {{overlaying:'y', side:'right', title: '売り抜け日'}}, margin: {{t:20, b:40, l:50, r:50}}, template: 'plotly_white' }});
 
-                // 【最重要】高スコアを前面に出すためスコア昇順にソート。10=赤(濃), 0=黄(薄)に固定。
+                // 【最前面表示対応】高スコア(10)＝赤(濃い), 低スコア(0)＝黄(薄い)に固定。スコア昇順ソートで赤を前面に。
                 const scatterData = [...analyzed].sort((a, b) => a.launchpad - b.launchpad);
                 Plotly.newPlot('chart-scatter', [{{
                     x: scatterData.map(x => x.persistence), y: scatterData.map(x => x.change), text: scatterData.map(x => x.ticker),
                     mode: 'markers+text', textposition: 'top center',
                     marker: {{ 
-                        size: 14, 
-                        color: scatterData.map(x => x.launchpad), 
-                        colorscale: 'YlOrRd', 
-                        reversescale: false,
-                        cmin: 0,
-                        cmax: 10,
-                        showscale: true, 
+                        size: 14, color: scatterData.map(x => x.launchpad), 
+                        colorscale: 'YlOrRd', reversescale: false,
+                        cmin: 0, cmax: 10, showscale: true, 
                         colorbar: {{title: 'Score', titleside: 'right'}} 
                     }}
                 }}], {{ xaxis: {{title: '出現日数'}}, yaxis: {{title: '期間騰落率(%)'}}, margin: {{t:20, b:40, l:50, r:50}}, template: 'plotly_white' }});
