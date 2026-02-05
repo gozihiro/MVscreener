@@ -27,7 +27,7 @@ def get_drive_service():
     return build('drive', 'v3', credentials=creds)
 
 def create_intelligence_report(df):
-    """HTMLレポート生成（散布図の配色・レイヤーを抜本修正）"""
+    """HTMLレポート生成（既存ロジック・解説・書式を厳密に維持）"""
     # 1. 日付列の特定 (MM/DD 形式)
     date_cols = sorted([c for c in df.columns if '価格_' in c])
     dates = [c.split('_')[-1] for c in date_cols]
@@ -48,25 +48,19 @@ def create_intelligence_report(df):
                 "valid": True
             })
         else:
-            market_data.append({"date": f"2026/{d}", "status": "データ収集中", "ad": 1.0, "dist": 0, "valid": False})
+            market_data.append({"date": f"2026/{d}", "status": "データなし", "ad": 1.0, "dist": 0, "valid": False})
 
     # 3. 銘柄データの抽出
     stock_rows = df[df['銘柄'] != '### MARKET_ENVIRONMENT ###'].copy()
     stocks_json = []
     for _, row in stock_rows.iterrows():
         prices = {}
-        opens = {}  # 陽線判定用に始値を追加
         patterns = {}
         growths = {}
         launchpads = {}
         for d in dates:
             p_val = pd.to_numeric(row.get(f'価格_{d}'), errors='coerce')
             prices[f"2026/{d}"] = float(p_val) if pd.notnull(p_val) else None
-            
-            # 始値データを抽出
-            o_val = pd.to_numeric(row.get(f'始値_{d}'), errors='coerce')
-            opens[f"2026/{d}"] = float(o_val) if pd.notnull(o_val) else None
-
             patterns[f"2026/{d}"] = str(row.get(f'パターン_{d}', ""))
             growths[f"2026/{d}"] = float(pd.to_numeric(row.get(f'売上成長(%)_{d}'), errors='coerce') or 0)
             lp_val = pd.to_numeric(row.get(f'発射台スコア_{d}'), errors='coerce')
@@ -75,19 +69,19 @@ def create_intelligence_report(df):
         stocks_json.append({
             "ticker": str(row['銘柄']),
             "prices": prices,
-            "opens": opens,
             "patterns": patterns,
             "growths": growths,
             "launchpads": launchpads
         })
 
+    # データペイロードの作成
     full_data_payload = {
         "dates": [f"2026/{d}" for d in dates],
         "market": market_data,
         "stocks": stocks_json
     }
 
-    # 4. HTML/JS テンプレート
+    # 4. HTML/JS テンプレート (二重波括弧はJS/CSSの保護用、一重はPythonの埋め込み用)
     html_content = f"""
     <!DOCTYPE html>
     <html lang="ja">
@@ -132,8 +126,8 @@ def create_intelligence_report(df):
                 <div id="chart-market" style="height:380px;"></div>
                 <div class="explanation-box">
                     <b>📈 需給診断のポイント:</b><br>
-                    ・<b>A/D比（青線）：</b> 市場全体の「健康度」。上昇は個別株への広範な買いを、下落は一部銘柄への資金集中または全体的な投げ売りを意味します。<br>
-                    ・<b>売り抜け日（赤棒）：</b> 指数の下落と出来高増が重なった「機関投資家の出口戦略」の痕跡。6〜7日を超えると「下落警戒」となります。
+                    ・<b>A/D比（青線）：</b> 市場全体の「健康度」を示します。上昇は個別株への広範な買いを、下落は一部銘柄への資金集中または全体的な投げ売りを意味します。<br>
+                    ・<b>売り抜け日（赤棒）：</b> 指数の下落と出来高増が重なった「機関投資家の出口戦略」の痕跡です。過去25取引日で累積され、6〜7日を超えると「下落警戒」となります。
                 </div>
             </div>
 
@@ -191,11 +185,9 @@ def create_intelligence_report(df):
                     const change = pricesInPeriod.length >= 2 ? ((pricesInPeriod[pricesInPeriod.length - 1] / pricesInPeriod[0]) - 1) * 100 : 0;
                     const vol = pricesInPeriod.length >= 2 ? ((Math.max(...pricesInPeriod) - Math.min(...pricesInPeriod)) / Math.min(...pricesInPeriod)) * 100 : 0;
                     
-                    // 【改善】最新日のスコアと厳密な陽線判定 (Close > Open)
+                    // 【改善】最新日のスコアを「Ready to Launch」の判定に使用
+                    // スクリーナー側で「陽線でなければスコア0」に修正済みなため、これを信じる
                     const latestLaunchpad = s.launchpads[latestDate] || 0;
-                    const latestClose = s.prices[latestDate];
-                    const latestOpen = s.opens[latestDate];
-                    const isBullish = (latestOpen && latestOpen > 0) ? (latestClose > latestOpen) : false;
 
                     let growth = 0, pattern = "－", launchpad = 0;
                     let anyStrict = false;
@@ -208,7 +200,7 @@ def create_intelligence_report(df):
                             if (s.patterns[d].includes('Strict')) anyStrict = true;
                         }}
                     }}
-                    return {{ ticker: s.ticker, persistence, change, vol, growth, pattern, anyStrict, launchpad, latestLaunchpad, isBullish }};
+                    return {{ ticker: s.ticker, persistence, change, vol, growth, pattern, anyStrict, launchpad, latestLaunchpad }};
                 }}).filter(x => x !== null);
 
                 const getSorter = (keys, orders) => (a, b) => {{
@@ -219,16 +211,16 @@ def create_intelligence_report(df):
                     return 0;
                 }};
 
-                // Ready to Launch の基本フィルター（陽線かつ最新スコアあり）
-                const readyBase = analyzed.filter(x => x.isBullish && x.latestLaunchpad > 0);
+                // 即応銘柄の基本フィルター（最新スコア > 0 ＝ 陽線確定）
+                const readyBase = analyzed.filter(x => x.latestLaunchpad > 0);
 
                 const sections = [
                     {{ title: "🚀 Ready to Launch (即応銘柄) 総合 TOP 5", hint: "優先順位: 最新発射台 ➔ 定着 ➔ 成長 ➔ 騰落率", 
                         data: [...readyBase].sort(getSorter(['latestLaunchpad','persistence','growth','change'], [-1,-1,-1,-1])).slice(0,5) }},
                     {{ title: "🚀 Ready to Launch - High-Base (Strict)", hint: "優先順位: 最新発射台 ➔ 定着 ➔ 低ボラ ➔ 成長", 
                         data: readyBase.filter(x => x.anyStrict).sort(getSorter(['latestLaunchpad','persistence','vol','growth'], [-1,-1,1,-1])).slice(0,5) }},
-                    {{ title: "🚀 Ready to Launch - VCP", hint: "優先順位: 最新発射台 ➔ 定着 ➔ 低ボラ ➔ 成長", 
-                        data: readyBase.filter(x => x.pattern.includes('VCP')).sort(getSorter(['latestLaunchpad','persistence','vol','growth'], [-1,-1,1,-1])).slice(0,5) }},
+                    {{ title: "🚀 Ready to Launch - VCP / PowerPlay", hint: "優先順位: 最新発射台 ➔ 定着 ➔ 低ボラ ➔ 成長", 
+                        data: readyBase.filter(x => x.pattern.includes('VCP') || x.pattern.includes('PowerPlay')).sort(getSorter(['latestLaunchpad','persistence','vol','growth'], [-1,-1,1,-1])).slice(0,5) }},
                     {{ title: "🏆 総合・サバイバルリーダー", hint: "優先順位: 定着 ➔ 騰落率 ➔ 成長 ➔ 低ボラ", 
                         data: [...analyzed].sort(getSorter(['persistence','change','growth','vol'], [-1,-1,-1,1])).slice(0,5) }},
                     {{ title: "📐 High-Base (Strict) リーダー", hint: "優先順位: 定着 ➔ 発射台 ➔ 低ボラ ➔ 騰落率 ➔ 成長", 
@@ -242,7 +234,7 @@ def create_intelligence_report(df):
                 let html = "";
                 sections.forEach(sec => {{
                     html += `<div class="card"><h2 class="section-title">${{sec.title}}</h2><p class="priority-hint">${{sec.hint}}</p><div class="rank-grid">`;
-                    if (sec.data.length === 0) html += "<p>対象なし（陽線かつ最新スコアが必要）</p>";
+                    if (sec.data.length === 0) html += "<p>対象なし</p>";
                     sec.data.forEach((s, idx) => {{
                         html += `
                         <div class="rank-card">
