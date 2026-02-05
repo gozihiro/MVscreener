@@ -55,12 +55,18 @@ def create_intelligence_report(df):
     stocks_json = []
     for _, row in stock_rows.iterrows():
         prices = {}
+        opens = {}  # 陽線判定用に始値を追加
         patterns = {}
         growths = {}
         launchpads = {}
         for d in dates:
             p_val = pd.to_numeric(row.get(f'価格_{d}'), errors='coerce')
             prices[f"2026/{d}"] = float(p_val) if pd.notnull(p_val) else None
+            
+            # 始値データの抽出（CSVに存在する場合のみ）
+            o_val = pd.to_numeric(row.get(f'始値_{d}'), errors='coerce')
+            opens[f"2026/{d}"] = float(o_val) if pd.notnull(o_val) else None
+
             patterns[f"2026/{d}"] = str(row.get(f'パターン_{d}', ""))
             growths[f"2026/{d}"] = float(pd.to_numeric(row.get(f'売上成長(%)_{d}'), errors='coerce') or 0)
             lp_val = pd.to_numeric(row.get(f'発射台スコア_{d}'), errors='coerce')
@@ -69,6 +75,7 @@ def create_intelligence_report(df):
         stocks_json.append({
             "ticker": str(row['銘柄']),
             "prices": prices,
+            "opens": opens,
             "patterns": patterns,
             "growths": growths,
             "launchpads": launchpads
@@ -184,12 +191,20 @@ def create_intelligence_report(df):
                     const change = pricesInPeriod.length >= 2 ? ((pricesInPeriod[pricesInPeriod.length - 1] / pricesInPeriod[0]) - 1) * 100 : 0;
                     const vol = pricesInPeriod.length >= 2 ? ((Math.max(...pricesInPeriod) - Math.min(...pricesInPeriod)) / Math.min(...pricesInPeriod)) * 100 : 0;
                     
-                    // 【改善】最新日のスコアと価格変動を計算（Ready to Launch用）
+                    // 【改善】最新日の発射台スコアと陽線判定
                     const latestLaunchpad = s.launchpads[latestDate] || 0;
-                    const prevDate = periodLen > 1 ? targetDates[periodLen - 2] : null;
-                    const latestPrice = s.prices[latestDate];
-                    const prevPrice = prevDate ? s.prices[prevDate] : null;
-                    const isPositiveDay = (prevPrice === null || latestPrice >= prevPrice) ? 1 : 0;
+                    const latestClose = s.prices[latestDate];
+                    const latestOpen = s.opens[latestDate];
+                    
+                    // 始値がある場合は 終値>始値、ない場合は 前日比プラスを陽線(WhiteCandle)とみなす
+                    let isWhiteCandle = false;
+                    if (latestOpen !== null && latestOpen !== undefined) {{
+                        isWhiteCandle = latestClose > latestOpen;
+                    }} else {{
+                        const prevDate = periodLen > 1 ? targetDates[periodLen - 2] : null;
+                        const prevClose = prevDate ? s.prices[prevDate] : null;
+                        isWhiteCandle = prevClose === null || latestClose >= prevClose;
+                    }}
 
                     let growth = 0, pattern = "－", launchpad = 0;
                     let anyStrict = false;
@@ -202,10 +217,7 @@ def create_intelligence_report(df):
                             if (s.patterns[d].includes('Strict')) anyStrict = true;
                         }}
                     }}
-                    return {{ 
-                        ticker: s.ticker, persistence, change, vol, growth, pattern, anyStrict, 
-                        launchpad, latestLaunchpad, isPositiveDay 
-                    }};
+                    return {{ ticker: s.ticker, persistence, change, vol, growth, pattern, anyStrict, launchpad, latestLaunchpad, isWhiteCandle }};
                 }}).filter(x => x !== null);
 
                 const getSorter = (keys, orders) => (a, b) => {{
@@ -217,9 +229,9 @@ def create_intelligence_report(df):
                 }};
 
                 const sections = [
-                    // Ready to Launch は最新スコアを優先し、かつ陰線銘柄(下落)を排除してソート
-                    {{ title: "🚀 Ready to Launch (即応銘柄) TOP 5", hint: "最新発射台 ➔ 前日比プラス ➔ 定着 ➔ 成長", 
-                        data: analyzed.filter(x => x.latestLaunchpad > 0 && x.isPositiveDay === 1).sort(getSorter(['latestLaunchpad','persistence','growth','change'], [-1,-1,-1,-1])).slice(0,5) }},
+                    // 【改善】Ready to Launch は最新日の陽線かつ最新スコアが高いものを抽出
+                    {{ title: "🚀 Ready to Launch (即応銘柄) TOP 5", hint: "最新陽線 ➔ 最新発射台 ➔ 定着 ➔ 成長", 
+                        data: analyzed.filter(x => x.isWhiteCandle && x.latestLaunchpad > 0).sort(getSorter(['latestLaunchpad','persistence','growth','change'], [-1,-1,-1,-1])).slice(0,5) }},
                     {{ title: "🏆 総合・サバイバルリーダー", hint: "定着 ➔ 騰落率 ➔ 成長 ➔ 低ボラ", 
                         data: [...analyzed].sort(getSorter(['persistence','change','growth','vol'], [-1,-1,-1,1])).slice(0,5) }},
                     {{ title: "📐 High-Base (Strict) リーダー", hint: "定着 ➔ 発射台 ➔ 低ボラ ➔ 騰落率 ➔ 成長", 
