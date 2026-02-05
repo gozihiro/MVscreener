@@ -246,14 +246,16 @@ def create_intelligence_report(df):
                     {{ x: chartData.map(m => m.date), y: chartData.map(m => m.dist), name: '売り抜け', type: 'bar', opacity: 0.3, marker: {{color:'#e74c3c'}}, yaxis: 'y2' }}
                 ], {{ yaxis: {{title: 'A/D比'}}, yaxis2: {{overlaying:'y', side:'right', title: '売り抜け日'}}, margin: {{t:20, b:40, l:50, r:50}}, template: 'plotly_white' }});
 
+                // 収束解析グラフ：色=発射台スコア(高スコア=赤/濃)
                 Plotly.newPlot('chart-scatter', [{{
                     x: analyzed.map(x => x.persistence), y: analyzed.map(x => x.change), text: analyzed.map(x => x.ticker),
                     mode: 'markers+text', textposition: 'top center',
                     marker: {{ 
                         size: 14, 
                         color: analyzed.map(x => x.launchpad), 
+                        // 【修正箇所】reversescale: true を指定し、高スコア(10)が赤(濃)となるように反転
                         colorscale: 'YlOrRd', 
-                        reversescale: false,
+                        reversescale: true,
                         cmin: 0,
                         cmax: 10,
                         showscale: true, 
