@@ -55,7 +55,7 @@ def create_intelligence_report(df):
     stocks_json = []
     for _, row in stock_rows.iterrows():
         prices = {}
-        opens = {}  # 陽線判定用に始値を追加
+        opens = {}
         patterns = {}
         growths = {}
         launchpads = {}
@@ -63,7 +63,7 @@ def create_intelligence_report(df):
             p_val = pd.to_numeric(row.get(f'価格_{d}'), errors='coerce')
             prices[f"2026/{d}"] = float(p_val) if pd.notnull(p_val) else None
             
-            # 始値データの抽出（CSVに存在する場合のみ）
+            # 始値データの取得（陽線判定用）
             o_val = pd.to_numeric(row.get(f'始値_{d}'), errors='coerce')
             opens[f"2026/{d}"] = float(o_val) if pd.notnull(o_val) else None
 
@@ -191,19 +191,20 @@ def create_intelligence_report(df):
                     const change = pricesInPeriod.length >= 2 ? ((pricesInPeriod[pricesInPeriod.length - 1] / pricesInPeriod[0]) - 1) * 100 : 0;
                     const vol = pricesInPeriod.length >= 2 ? ((Math.max(...pricesInPeriod) - Math.min(...pricesInPeriod)) / Math.min(...pricesInPeriod)) * 100 : 0;
                     
-                    // 【改善】最新日の発射台スコアと陽線判定
+                    // 【改善】最新日のスコアと陽線判定
                     const latestLaunchpad = s.launchpads[latestDate] || 0;
                     const latestClose = s.prices[latestDate];
                     const latestOpen = s.opens[latestDate];
                     
-                    // 始値がある場合は 終値>始値、ない場合は 前日比プラスを陽線(WhiteCandle)とみなす
-                    let isWhiteCandle = false;
-                    if (latestOpen !== null && latestOpen !== undefined) {{
-                        isWhiteCandle = latestClose > latestOpen;
+                    // 最低条件：陽線（終値 > 始値）
+                    let isBullish = false;
+                    if (latestOpen && latestOpen !== 0) {{
+                        isBullish = latestClose > latestOpen;
                     }} else {{
+                        // 始値データがない場合のフォールバック：前日比プラス
                         const prevDate = periodLen > 1 ? targetDates[periodLen - 2] : null;
                         const prevClose = prevDate ? s.prices[prevDate] : null;
-                        isWhiteCandle = prevClose === null || latestClose >= prevClose;
+                        isBullish = prevClose !== null && latestClose > prevClose;
                     }}
 
                     let growth = 0, pattern = "－", launchpad = 0;
@@ -217,7 +218,7 @@ def create_intelligence_report(df):
                             if (s.patterns[d].includes('Strict')) anyStrict = true;
                         }}
                     }}
-                    return {{ ticker: s.ticker, persistence, change, vol, growth, pattern, anyStrict, launchpad, latestLaunchpad, isWhiteCandle }};
+                    return {{ ticker: s.ticker, persistence, change, vol, growth, pattern, anyStrict, launchpad, latestLaunchpad, isBullish }};
                 }}).filter(x => x !== null);
 
                 const getSorter = (keys, orders) => (a, b) => {{
@@ -229,22 +230,22 @@ def create_intelligence_report(df):
                 }};
 
                 const sections = [
-                    // 【改善】Ready to Launch は最新日の陽線かつ最新スコアが高いものを抽出
-                    {{ title: "🚀 Ready to Launch (即応銘柄) TOP 5", hint: "最新陽線 ➔ 最新発射台 ➔ 定着 ➔ 成長", 
-                        data: analyzed.filter(x => x.isWhiteCandle && x.latestLaunchpad > 0).sort(getSorter(['latestLaunchpad','persistence','growth','change'], [-1,-1,-1,-1])).slice(0,5) }},
-                    {{ title: "🏆 総合・サバイバルリーダー", hint: "定着 ➔ 騰落率 ➔ 成長 ➔ 低ボラ", 
+                    // 【修正】最新陽線を最低条件とし、優先順位をご指示通りに設定
+                    {{ title: "🚀 Ready to Launch (即応銘柄) TOP 5", hint: "優先順位: 最新発射台 ➔ 定着 ➔ 成長 ➔ 騰落率", 
+                        data: analyzed.filter(x => x.isBullish && x.latestLaunchpad > 0).sort(getSorter(['latestLaunchpad','persistence','growth','change'], [-1,-1,-1,-1])).slice(0,5) }},
+                    {{ title: "🏆 総合・サバイバルリーダー", hint: "優先順位: 定着 ➔ 騰落率 ➔ 成長 ➔ 低ボラ", 
                         data: [...analyzed].sort(getSorter(['persistence','change','growth','vol'], [-1,-1,-1,1])).slice(0,5) }},
-                    {{ title: "📐 High-Base (Strict) リーダー", hint: "定着 ➔ 発射台 ➔ 低ボラ ➔ 騰落率 ➔ 成長", 
+                    {{ title: "📐 High-Base (Strict) リーダー", hint: "優先順位: 定着 ➔ 発射台 ➔ 低ボラ ➔ 騰落率 ➔ 成長", 
                         data: analyzed.filter(x => x.anyStrict).sort(getSorter(['persistence','launchpad','vol','change','growth'], [-1,-1,1,-1,-1])).slice(0,5) }},
-                    {{ title: "🌀 VCP・収束リーダー", hint: "定着 ➔ 低ボラ ➔ 成長 ➔ 騰落率", 
+                    {{ title: "🌀 VCP・収束リーダー", hint: "優先順位: 定着 ➔ 低ボラ ➔ 成長 ➔ 騰落率", 
                         data: analyzed.filter(x => x.pattern.includes('VCP')).sort(getSorter(['persistence','vol','growth','change'], [-1,1,-1,-1])).slice(0,5) }},
-                    {{ title: "⚡ PowerPlay・勢いリーダー", hint: "定着 ➔ 騰落率 ➔ 成長 ➔ 低ボラ", 
+                    {{ title: "⚡ PowerPlay・勢いリーダー", hint: "優先順位: 定着 ➔ 騰落率 ➔ 成長 ➔ 低ボラ", 
                         data: analyzed.filter(x => x.pattern.includes('PowerPlay')).sort(getSorter(['persistence','change','growth','vol'], [-1,-1,-1,1])).slice(0,5) }}
                 ];
 
                 let html = "";
                 sections.forEach(sec => {{
-                    html += `<div class="card"><h2 class="section-title">${{sec.title}}</h2><p class="priority-hint">優先順位: ${{sec.hint}}</p><div class="rank-grid">`;
+                    html += `<div class="card"><h2 class="section-title">${{sec.title}}</h2><p class="priority-hint">${{sec.hint}}</p><div class="rank-grid">`;
                     if (sec.data.length === 0) html += "<p>対象なし</p>";
                     sec.data.forEach((s, idx) => {{
                         html += `
