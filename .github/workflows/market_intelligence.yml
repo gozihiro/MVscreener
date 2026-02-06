@@ -2,7 +2,8 @@ name: Market Intelligence Bot
 
 on:
   schedule:
-    # 月曜日〜金曜日の日本時間00:00 (UTC 15:00)
+    # 14:40 UTC (23:40 JST) と 15:00 UTC (00:00 JST) の2回実行
+    - cron: '40 14 * * 1-5'
     - cron: '0 15 * * 1-5'
   workflow_dispatch: # 手動実行ボタンも有効にします
 
