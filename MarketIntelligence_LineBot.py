@@ -1,4 +1,4 @@
-import yf
+import yfinance as yf
 import pandas as pd
 import requests
 import json
@@ -40,7 +40,7 @@ def get_detailed_pulse():
     for name, ticker in indices.items():
         data = yf.download(ticker, period="1d", interval="1m", progress=False, auto_adjust=True)
         if not data.empty:
-            # マルチインデックス対策: 列を平坦化し、確実にスカラー値（数値）を取得
+            # マルチインデックス対策: 列を平坦化
             if isinstance(data.columns, pd.MultiIndex):
                 data.columns = data.columns.get_level_values(0)
             
@@ -87,8 +87,12 @@ def get_detailed_pulse():
         adv, dec, adv_v, dec_v = 0, 0, 0, 0
         for t in sample_tickers:
             try:
-                # 特定銘柄のデータをクロスセクションで抽出
-                ticker_data = sample_data.xs(t, axis=1, level=1) if isinstance(sample_data.columns, pd.MultiIndex) else sample_data
+                # 特定銘柄のデータを抽出
+                if isinstance(sample_data.columns, pd.MultiIndex):
+                    ticker_data = sample_data.xs(t, axis=1, level=1)
+                else:
+                    ticker_data = sample_data
+                
                 if ticker_data.empty: continue
                 
                 c = ticker_data['Close'].dropna()
