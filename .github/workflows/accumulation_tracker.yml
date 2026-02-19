@@ -1,0 +1,35 @@
+name: Accumulation Survival Tracker (JMIA Style)
+
+on:
+  schedule:
+    # 既存のスクリーナーが UTC 22:05 (日本時間 07:05) 開始なので
+    # こちらは UTC 22:35 (日本時間 07:35) 開始に設定し、リソース競合を避けます
+    - cron: '35 22 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360 # 長時間スキャンを考慮して5.5時間を許容
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install yfinance pandas numpy google-api-python-client google-auth-httplib2 google-auth-oauthlib
+
+      - name: Run Accumulation Tracker
+        env:
+          CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
+          ACCUMULATION_FOLDER_ID: ${{ secrets.GDRIVE_ACCUMULATION_FOLDER_ID }}
+        # 前のターンで作成したスクリプトのファイル名を指定してください
+        run: python accumulation_tracker.py
