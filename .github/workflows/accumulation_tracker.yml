@@ -30,6 +30,6 @@ jobs:
           CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
           CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
           REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
-          ACCUMULATION_FOLDER_ID: ${{ secrets.GDRIVE_ACCUMULATION_FOLDER_ID }}
+          ACCUMULATION_FOLDER_ID: ${{ secrets.ACCUMULATION_FOLDER_ID }}
         # 前のターンで作成したスクリプトのファイル名を指定してください
         run: python accumulation_tracker.py
