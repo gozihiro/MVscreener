@@ -58,6 +58,9 @@ def create_intelligence_report(df):
         patterns = {}
         growths = {}
         launchpads = {}
+        ema10s = {}
+        sma20s = {}
+        sma50s = {}
         for d in dates:
             p_val = pd.to_numeric(row.get(f'価格_{d}'), errors='coerce')
             prices[f"2026/{d}"] = float(p_val) if pd.notnull(p_val) else None
@@ -65,13 +68,22 @@ def create_intelligence_report(df):
             growths[f"2026/{d}"] = float(pd.to_numeric(row.get(f'売上成長(%)_{d}'), errors='coerce') or 0)
             lp_val = pd.to_numeric(row.get(f'発射台スコア_{d}'), errors='coerce')
             launchpads[f"2026/{d}"] = float(lp_val) if pd.notnull(lp_val) else 0
+            e10_val = pd.to_numeric(row.get(f'10EMA_{d}'), errors='coerce')
+            ema10s[f"2026/{d}"] = float(e10_val) if pd.notnull(e10_val) else None
+            s20_val = pd.to_numeric(row.get(f'20SMA_{d}'), errors='coerce')
+            sma20s[f"2026/{d}"] = float(s20_val) if pd.notnull(s20_val) else None
+            s50_val = pd.to_numeric(row.get(f'50SMA_{d}'), errors='coerce')
+            sma50s[f"2026/{d}"] = float(s50_val) if pd.notnull(s50_val) else None
 
         stocks_json.append({
             "ticker": str(row['銘柄']),
             "prices": prices,
             "patterns": patterns,
             "growths": growths,
-            "launchpads": launchpads
+            "launchpads": launchpads,
+            "ema10s": ema10s,
+            "sma20s": sma20s,
+            "sma50s": sma50s
         })
 
     full_data_payload = {
@@ -200,6 +212,23 @@ def create_intelligence_report(df):
                         if (upCount >= 4 && isTight) stealthScore = upCount;
                     }}
 
+                    // --- Momentum Stealth Logic (7/10 days up, <2.5%, 10EMA > 20SMA > 50SMA) ---
+                    let momentumStealthScore = 0;
+                    if (pricesInPeriod.length >= 11) {{
+                        const last10 = pricesInPeriod.slice(-11);
+                        let upCount = 0;
+                        let isTight = true;
+                        for (let i = 1; i < 11; i++) {{
+                            const dailyRet = (last10[i] / last10[i-1]) - 1;
+                            if (dailyRet > 0) upCount++;
+                            if (Math.abs(dailyRet) > 0.025) isTight = false;
+                        }}
+                        const dLat = latestDate;
+                        const m10 = s.ema10s[dLat], m20 = s.sma20s[dLat], m50 = s.sma50s[dLat];
+                        const isPerfectOrder = (m10 && m20 && m50) ? (m10 > m20 && m20 > m50) : true;
+                        if (upCount >= 7 && isTight && isPerfectOrder) momentumStealthScore = upCount;
+                    }}
+
                     let growth = 0, pattern = "－", launchpad = 0;
                     let anyStrict = false;
                     for(let i = periodLen - 1; i >= 0; i--) {{
@@ -211,7 +240,7 @@ def create_intelligence_report(df):
                             if (s.patterns[d].includes('Strict')) anyStrict = true;
                         }}
                     }}
-                    return {{ ticker: s.ticker, persistence, change, vol, growth, pattern, anyStrict, launchpad, latestLaunchpad, stealthScore }};
+                    return {{ ticker: s.ticker, persistence, change, vol, growth, pattern, anyStrict, launchpad, latestLaunchpad, stealthScore, momentumStealthScore }};
                 }}).filter(x => x !== null);
 
                 const getSorter = (keys, orders) => (a, b) => {{
@@ -229,6 +258,8 @@ def create_intelligence_report(df):
                         data: [...readyBase].sort(getSorter(['latestLaunchpad','persistence','growth','change'], [-1,-1,-1,-1])).slice(0,5) }},
                     {{ title: "🕵️ Stealth Accumulation (隠密買い集め)", hint: "優先順位: 隠密スコア ➔ 定着 ➔ 低ボラ ➔ 成長", 
                         data: analyzed.filter(x => x.stealthScore > 0).sort(getSorter(['stealthScore','persistence','vol','growth'], [-1,-1,1,-1])).slice(0,5) }},
+                    {{ title: "🕵️ Momentum Stealth (短期加速)", hint: "優先順位: 隠密スコア ➔ 定着 ➔ 低ボラ ➔ 成長", 
+                        data: analyzed.filter(x => x.momentumStealthScore > 0).sort(getSorter(['momentumStealthScore','persistence','vol','growth'], [-1,-1,1,-1])).slice(0,5) }},
                     {{ title: "🚀 Ready to Launch - High-Base (Strict)", hint: "優先順位: 最新発射台 ➔ 定着 ➔ 低ボラ ➔ 成長", 
                         data: readyBase.filter(x => x.pattern.includes('Strict')).sort(getSorter(['latestLaunchpad','persistence','vol','growth'], [-1,-1,1,-1])).slice(0,5) }},
                     {{ title: "🚀 Ready to Launch - High-Base", hint: "優先順位: 最新発射台 ➔ 定着 ➔ 低ボラ ➔ 成長", 
@@ -258,7 +289,7 @@ def create_intelligence_report(df):
                             <span class="persistence-tag">${{s.persistence}}日出現</span>
                             <h3 style="margin:5px 0;">${{s.ticker}}</h3>
                             <div class="metric-box">
-                                <div class="metric-row"><span>${{sec.title.includes('Stealth') ? '隠密Score' : '発射台Score'}}</span> <b class="score-highlight">${{sec.title.includes('Stealth') ? s.stealthScore : (sec.title.includes('Ready') ? s.latestLaunchpad : s.launchpad)}}</b></div>
+                                <div class="metric-row"><span>${{sec.title.includes('Stealth') ? '隠密Score' : '発射台Score'}}</span> <b class="score-highlight">${{sec.title.includes('Momentum') ? s.momentumStealthScore : (sec.title.includes('Stealth') ? s.stealthScore : (sec.title.includes('Ready') ? s.latestLaunchpad : s.launchpad))}}</b></div>
                                 <div class="metric-row"><span>期間騰落</span> <b style="color:${{s.change >=0 ? '#e74c3c':'#2980b9'}}">${{s.change.toFixed(1)}}%</b></div>
                                 <div class="metric-row"><span>売上成長</span> <b>${{s.growth}}%</b></div>
                             </div>
