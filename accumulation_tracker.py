@@ -8,9 +8,9 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
 # --- 環境変数 ---
-CLIENT_ID = os.environ.get('CLIENT_ID')
-CLIENT_SECRET = os.environ.get('CLIENT_SECRET')
-REFRESH_TOKEN = os.environ.get('REFRESH_TOKEN')
+CLIENT_ID = os.environ.get('GDRIVE_CLIENT_ID')
+CLIENT_SECRET = os.environ.get('GDRIVE_CLIENT_SECRET')
+REFRESH_TOKEN = os.environ.get('GDRIVE_REFRESH_TOKEN')
 ACCUMULATION_FOLDER_ID = os.environ.get('ACCUMULATION_FOLDER_ID')
 
 # --- ミネルヴィニ流・中型株までのレンジ設定 ---
