@@ -198,7 +198,7 @@ def create_intelligence_report(df):
                     
                     const latestLaunchpad = s.launchpads[latestDate] || 0;
 
-                    // --- Stealth Accumulation Logic (Golden Ratio: 4/5 days, <2.0%) ---
+                    // --- Stealth Accumulation Logic (4/5 days, <3.5% daily) ---
                     let stealthScore = 0;
                     if (pricesInPeriod.length >= 6) {{
                         const last6 = pricesInPeriod.slice(-6);
@@ -207,12 +207,12 @@ def create_intelligence_report(df):
                         for (let i = 1; i < 6; i++) {{
                             const dailyRet = (last6[i] / last6[i-1]) - 1;
                             if (dailyRet > 0) upCount++;
-                            if (Math.abs(dailyRet) > 0.02) isTight = false;
+                            if (Math.abs(dailyRet) > 0.035) isTight = false;
                         }}
                         if (upCount >= 4 && isTight) stealthScore = upCount;
                     }}
 
-                    // --- Momentum Stealth Logic (7/10 days up, <2.5%, 10EMA > 20SMA > 50SMA) ---
+                    // --- Momentum Stealth Logic (7/10 days up, <7.7% daily, 10EMA > 20SMA > 50SMA) ---
                     let momentumStealthScore = 0;
                     if (pricesInPeriod.length >= 11) {{
                         const last10 = pricesInPeriod.slice(-11);
@@ -221,7 +221,7 @@ def create_intelligence_report(df):
                         for (let i = 1; i < 11; i++) {{
                             const dailyRet = (last10[i] / last10[i-1]) - 1;
                             if (dailyRet > 0) upCount++;
-                            if (Math.abs(dailyRet) > 0.025) isTight = false;
+                            if (Math.abs(dailyRet) > 0.077) isTight = false;
                         }}
                         const dLat = latestDate;
                         const m10 = s.ema10s[dLat], m20 = s.sma20s[dLat], m50 = s.sma50s[dLat];
