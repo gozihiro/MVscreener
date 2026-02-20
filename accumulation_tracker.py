@@ -3,6 +3,7 @@ import io
 import pandas as pd
 import yfinance as yf
 from datetime import datetime
+import time
 import requests
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -37,14 +38,12 @@ def get_all_us_tickers():
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, headers=headers, timeout=15)
         if response.status_code != 200:
-            print(f"Failed to fetch tickers: HTTP {response.status_code}")
             return []
         
         # 記号（$）等を含む不正なティッカーを除外してエラー回避・高速化
         tickers = [s.strip() for s in response.text.splitlines() if s.strip().isalpha()]
         return sorted(list(set(tickers)))
-    except Exception as e:
-        print(f"Ticker list error: {e}")
+    except:
         return []
 
 def is_accumulation_stealth(df, ticker):
@@ -81,9 +80,8 @@ def is_accumulation_stealth(df, ticker):
     
     # 5. 10EMAとの密着度 (乖離3%以内)
     # 「買い集め中」であり「まだ発射前」であることを確認
-    last_p = df['Close'].iloc[-1]
-    last_e10 = ema10.iloc[-1]
-    if not (last_e10 < last_p < last_e10 * 1.03):
+    last_ema10 = ema10.iloc[-1]
+    if not (df['Close'].iloc[-1] > last_ema10 and df['Close'].iloc[-1] < last_ema10 * 1.03):
         return False
 
     return True
@@ -119,12 +117,11 @@ def run_tracker():
     service = get_drive_service()
     watchlist = get_all_us_tickers()
     
-    # デバッグ用に件数を即座に出力
     print(f"Watchlist count: {len(watchlist)}")
     if not watchlist: return
 
     current_states = get_current_accumulation_states(service)
-    print(f"Current folder states: {len(current_states)} tickers tracked.")
+    print(f"Current states: {len(current_states)}")
     
     today_str = datetime.now().strftime('%Y%m%d')
     processed_tickers = set()
@@ -133,6 +130,9 @@ def run_tracker():
     for ticker in watchlist:
         scanned_tickers.add(ticker)
         try:
+            # 制限回避のための待機（1.2秒間隔 ＝ 6,700銘柄で約2.2時間）
+            time.sleep(1.2)
+            
             # 高速化のためhistoryを使用
             t_obj = yf.Ticker(ticker)
             df = t_obj.history(period="3mo")
