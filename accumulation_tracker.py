@@ -5,6 +5,7 @@ import yfinance as yf
 from datetime import datetime
 import time
 import requests
+import random
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
@@ -19,6 +20,10 @@ ACCUMULATION_FOLDER_ID = os.environ.get('ACCUMULATION_FOLDER_ID')
 # スーパーパフォーマーの初動を捉えるため、1.5億ドル〜200億ドルに設定
 MIN_MARKET_CAP = 150_000_000      # 150M (機関投資家の最低ライン)
 MAX_MARKET_CAP = 20_000_000_000   # 20B (中型株の上限目安)
+
+# --- 実行制限回避の設定 (既存スクリーナーを継承) ---
+BATCH_SIZE = 50
+BATCH_SLEEP_BASE = 85
 
 def get_drive_service():
     creds = Credentials(
@@ -48,29 +53,19 @@ def get_all_us_tickers():
 
 def is_accumulation_stealth(df, ticker):
     """JMIA型 判定ロジック：10日中7日陽線 ＋ 7.7%幅 ＋ 短期序列 ＋ 10EMA密着"""
-    if len(df) < 25: return False # 計算に必要な期間を確保
+    if len(df) < 60: return False # MA50の安定計算のため期間を確保
     
-    # 1. 時価総額フィルター (ミネルヴィニ・レンジ)
-    try:
-        info = yf.Ticker(ticker).fast_info
-        m_cap = info['market_cap']
-        if not (MIN_MARKET_CAP <= m_cap <= MAX_MARKET_CAP):
-            return False
-    except:
-        return False
-
     recent = df.tail(10).copy()
     
-    # 2. 陽線頻度 (10日中7日以上)
+    # 1. 陽線頻度 (10日中7日以上)
     up_days = (recent['Close'] > recent['Open']).sum()
     if up_days < 7: return False
     
-    # 3. 値幅のタイトネス (日次7.7%以内)
+    # 2. 値幅のタイトネス (日次7.7%以内)
     daily_ranges = (recent['High'] - recent['Low']) / recent['Close']
     if daily_ranges.max() > 0.077: return False
     
-    # 4. 移動平均線の序列 (10EMA > 20SMA > 50SMA)
-    # ミネルヴィニ Stage 2の初期加速を確認
+    # 3. 移動平均線の序列 (10EMA > 20SMA > 50SMA)
     ema10 = df['Close'].ewm(span=10, adjust=False).mean()
     sma20 = df['Close'].rolling(window=20).mean()
     sma50 = df['Close'].rolling(window=50).mean()
@@ -78,10 +73,19 @@ def is_accumulation_stealth(df, ticker):
     if not (ema10.iloc[-1] > sma20.iloc[-1] > sma50.iloc[-1]):
         return False
     
-    # 5. 10EMAとの密着度 (乖離3%以内)
-    # 「買い集め中」であり「まだ発射前」であることを確認
-    last_ema10 = ema10.iloc[-1]
-    if not (df['Close'].iloc[-1] > last_ema10 and df['Close'].iloc[-1] < last_ema10 * 1.03):
+    # 4. 10EMAとの密着度 (乖離3%以内)
+    last_p = df['Close'].iloc[-1]
+    last_e10 = ema10.iloc[-1]
+    if not (last_e10 < last_p < last_e10 * 1.03):
+        return False
+
+    # 5. 時価総額フィルター (テクニカル合格後にのみ実行して通信を節約)
+    try:
+        info = yf.Ticker(ticker).fast_info
+        m_cap = info['market_cap']
+        if not (MIN_MARKET_CAP <= m_cap <= MAX_MARKET_CAP):
+            return False
+    except:
         return False
 
     return True
@@ -127,48 +131,58 @@ def run_tracker():
     processed_tickers = set()
     scanned_tickers = set()
 
-    for ticker in watchlist:
-        scanned_tickers.add(ticker)
+    # 既存スクリーナーと同様のバッチ処理
+    for i in range(0, len(watchlist), BATCH_SIZE):
+        batch = watchlist[i:i + BATCH_SIZE]
         try:
-            # 制限回避のための待機（1.2秒間隔 ＝ 6,700銘柄で約2.2時間）
-            time.sleep(1.2)
-            
-            # 高速化のためhistoryを使用
-            t_obj = yf.Ticker(ticker)
-            df = t_obj.history(period="3mo")
-            
-            if df.empty or len(df) < 25: continue
-            
-            # 条件判定 (時価総額 + テクニカル)
-            if is_accumulation_stealth(df, ticker):
-                prev_state = current_states.get(ticker)
-                new_count = (prev_state['count'] + 1) if prev_state else 1
-                new_filename = f"[{new_count:02d}]_{ticker}_{today_str}.csv"
-                
-                # フォルダ内の古い同銘柄ファイルを削除
-                if prev_state:
-                    service.files().delete(fileId=prev_state['id']).execute()
-                
-                # 保存
-                output = io.StringIO()
-                df.tail(20).to_csv(output)
-                fh = io.BytesIO(output.getvalue().encode('utf-8'))
-                media = MediaIoBaseUpload(fh, mimetype='text/csv')
-                meta = {'name': new_filename, 'parents': [ACCUMULATION_FOLDER_ID]}
-                service.files().create(body=meta, media_body=media).execute()
-                
-                print(f"Update: {ticker} (Day {new_count})")
-                processed_tickers.add(ticker)
-                
-        except:
-            continue
+            # バッチ一括ダウンロード
+            data = yf.download(batch, period="6mo", interval="1d", progress=False, auto_adjust=True, threads=True)
+            if data.empty:
+                time.sleep(BATCH_SLEEP_BASE)
+                continue
 
-        if len(scanned_tickers) % 100 == 0:
-            print(f"Progress: {len(scanned_tickers)} tickers scanned...")
+            for ticker in batch:
+                scanned_tickers.add(ticker)
+                try:
+                    # バッチデータから個別銘柄を抽出
+                    if ticker not in data['Close'].columns: continue
+                    df = data.xs(ticker, axis=1, level=1).dropna()
+                    
+                    # カラム名補正（yf.downloadはOpen, High, Low, Closeを出力）
+                    if df.empty or len(df) < 25: continue
+                    
+                    # 条件判定
+                    if is_accumulation_stealth(df, ticker):
+                        prev_state = current_states.get(ticker)
+                        new_count = (prev_state['count'] + 1) if prev_state else 1
+                        new_filename = f"[{new_count:02d}]_{ticker}_{today_str}.csv"
+                        
+                        # フォルダ内の古い同銘柄ファイルを削除
+                        if prev_state:
+                            service.files().delete(fileId=prev_state['id']).execute()
+                        
+                        # 保存
+                        output = io.StringIO()
+                        df.tail(20).to_csv(output)
+                        fh = io.BytesIO(output.getvalue().encode('utf-8'))
+                        media = MediaIoBaseUpload(fh, mimetype='text/csv')
+                        meta = {'name': new_filename, 'parents': [ACCUMULATION_FOLDER_ID]}
+                        service.files().create(body=meta, media_body=media).execute()
+                        
+                        print(f"Update: {ticker} (Day {new_count})")
+                        processed_tickers.add(ticker)
+                except:
+                    continue
+
+        except Exception as e:
+            print(f"Batch Error {i}: {e}")
+        
+        # バッチごとの待機 (既存スクリーナーの設定)
+        print(f"Progress: {min(i + BATCH_SIZE, len(watchlist))} tickers scanned...")
+        time.sleep(BATCH_SLEEP_BASE + random.uniform(0, 10))
 
     # 脱落銘柄のクリーンアップ
     for ticker, state in current_states.items():
-        # 「今日スキャンを試みた銘柄」の中で「条件を満たさなかった」ものだけを削除対象にする
         if ticker in scanned_tickers and ticker not in processed_tickers:
             service.files().delete(fileId=state['id']).execute()
             print(f"Drop: {ticker}")
