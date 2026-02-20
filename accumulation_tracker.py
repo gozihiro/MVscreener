@@ -3,6 +3,7 @@ import io
 import pandas as pd
 import yfinance as yf
 from datetime import datetime
+import requests
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
@@ -32,11 +33,18 @@ def get_all_us_tickers():
     """全米上場銘柄リストの取得（ここを特定の監視リストCSVに置き換えることも可能）"""
     try:
         url = "https://raw.githubusercontent.com/rreichel3/US-Stock-Symbols/main/all/all_tickers.txt"
-        df_tickers = pd.read_csv(url, header=None, names=['Symbol'])
+        # 403エラー回避のためUser-Agentを付与
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers, timeout=15)
+        if response.status_code != 200:
+            print(f"Failed to fetch tickers: HTTP {response.status_code}")
+            return []
+        
         # 記号（$）等を含む不正なティッカーを除外してエラー回避・高速化
-        tickers = [s for s in df_tickers['Symbol'].astype(str).tolist() if s.isalpha()]
+        tickers = [s.strip() for s in response.text.splitlines() if s.strip().isalpha()]
         return sorted(list(set(tickers)))
-    except:
+    except Exception as e:
+        print(f"Ticker list error: {e}")
         return []
 
 def is_accumulation_stealth(df, ticker):
@@ -73,8 +81,9 @@ def is_accumulation_stealth(df, ticker):
     
     # 5. 10EMAとの密着度 (乖離3%以内)
     # 「買い集め中」であり「まだ発射前」であることを確認
-    last_ema10 = ema10.iloc[-1]
-    if not (df['Close'].iloc[-1] > last_ema10 and df['Close'].iloc[-1] < last_ema10 * 1.03):
+    last_p = df['Close'].iloc[-1]
+    last_e10 = ema10.iloc[-1]
+    if not (last_e10 < last_p < last_e10 * 1.03):
         return False
 
     return True
@@ -109,9 +118,14 @@ def get_current_accumulation_states(service):
 def run_tracker():
     service = get_drive_service()
     watchlist = get_all_us_tickers()
+    
+    # デバッグ用に件数を即座に出力
+    print(f"Watchlist count: {len(watchlist)}")
     if not watchlist: return
 
     current_states = get_current_accumulation_states(service)
+    print(f"Current folder states: {len(current_states)} tickers tracked.")
+    
     today_str = datetime.now().strftime('%Y%m%d')
     processed_tickers = set()
     scanned_tickers = set()
@@ -148,6 +162,9 @@ def run_tracker():
                 
         except:
             continue
+
+        if len(scanned_tickers) % 100 == 0:
+            print(f"Progress: {len(scanned_tickers)} tickers scanned...")
 
     # 脱落銘柄のクリーンアップ
     for ticker, state in current_states.items():
