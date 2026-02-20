@@ -5,7 +5,7 @@ import yfinance as yf
 from datetime import datetime
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
+from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 
 # --- 環境変数 ---
 CLIENT_ID = os.environ.get('CLIENT_ID')
@@ -33,7 +33,9 @@ def get_all_us_tickers():
     try:
         url = "https://raw.githubusercontent.com/rreichel3/US-Stock-Symbols/main/all/all_tickers.txt"
         df_tickers = pd.read_csv(url, header=None, names=['Symbol'])
-        return df_tickers['Symbol'].tolist()
+        # 記号（$）等を含む不正なティッカーを除外してエラー回避・高速化
+        tickers = [s for s in df_tickers['Symbol'].astype(str).tolist() if s.isalpha()]
+        return sorted(list(set(tickers)))
     except:
         return []
 
@@ -79,19 +81,29 @@ def is_accumulation_stealth(df, ticker):
 
 def get_current_accumulation_states(service):
     """既存フォルダの生存カウントを取得"""
-    query = f"'{ACCUMULATION_FOLDER_ID}' in parents and trashed = false"
-    results = service.files().list(q=query, fields="files(id, name)").execute()
-    files = results.get('files', [])
-    
     states = {}
-    for f in files:
-        if f['name'].startswith('['):
-            try:
-                parts = f['name'].split('_')
-                count = int(parts[0][1:3])
-                ticker = parts[1]
-                states[ticker] = {'id': f['id'], 'count': count}
-            except: continue
+    page_token = None
+    query = f"'{ACCUMULATION_FOLDER_ID}' in parents and trashed = false"
+    
+    while True:
+        results = service.files().list(
+            q=query, 
+            fields="nextPageToken, files(id, name)",
+            pageToken=page_token
+        ).execute()
+        
+        for f in results.get('files', []):
+            if f['name'].startswith('['):
+                try:
+                    parts = f['name'].split('_')
+                    count = int(parts[0][1:3])
+                    ticker = parts[1]
+                    states[ticker] = {'id': f['id'], 'count': count}
+                except: continue
+        
+        page_token = results.get('nextPageToken')
+        if not page_token:
+            break
     return states
 
 def run_tracker():
@@ -102,8 +114,10 @@ def run_tracker():
     current_states = get_current_accumulation_states(service)
     today_str = datetime.now().strftime('%Y%m%d')
     processed_tickers = set()
+    scanned_tickers = set()
 
     for ticker in watchlist:
+        scanned_tickers.add(ticker)
         try:
             # 高速化のためhistoryを使用
             t_obj = yf.Ticker(ticker)
@@ -137,7 +151,8 @@ def run_tracker():
 
     # 脱落銘柄のクリーンアップ
     for ticker, state in current_states.items():
-        if ticker not in processed_tickers:
+        # 「今日スキャンを試みた銘柄」の中で「条件を満たさなかった」ものだけを削除対象にする
+        if ticker in scanned_tickers and ticker not in processed_tickers:
             service.files().delete(fileId=state['id']).execute()
             print(f"Drop: {ticker}")
 
