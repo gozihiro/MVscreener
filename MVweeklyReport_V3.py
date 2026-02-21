@@ -187,7 +187,7 @@ def create_intelligence_report(df, acc_data=[]):
             .score-highlight {{ color: #f39c12; font-weight: bold; }}
             .tier-header {{ background: #2c3e50; color: white; padding: 10px 20px; border-radius: 10px; margin-bottom: 15px; display: inline-block; }}
             
-            /* 新設：コンパクトな表形式のスタイル */
+            /* コンパクトな表形式のスタイル */
             .acc-table {{ width: 100%; border-collapse: collapse; font-size: 0.85em; margin-bottom: 10px; background: white; }}
             .acc-table th, .acc-table td {{ border-bottom: 1px solid #eee; padding: 8px 10px; text-align: left; }}
             .acc-table th {{ color: #7f8c8d; font-weight: normal; background: #fafafa; border-top: 1px solid #eee; }}
@@ -444,7 +444,7 @@ def create_intelligence_report(df, acc_data=[]):
                         colorbar: {{title: 'Score', titleside: 'right'}} 
                     }}
                 }}], {{ xaxis: {{title: '出現日数'}}, yaxis: {{title: '期間騰落率(%)'}}, margin: {{t:20, b:40, l:50, r:50}}, template: 'plotly_white' }});
-            }
+            }}
             handleDateChange();
         </script>
     </body>
