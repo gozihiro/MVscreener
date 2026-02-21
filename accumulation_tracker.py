@@ -79,10 +79,14 @@ def is_accumulation_stealth(df, ticker):
     if not (last_e10 < last_p < last_e10 * 1.03):
         return False
 
-    # 5. 時価総額フィルター (テクニカル合格後にのみ実行して通信を節約)
+    # 5. 個別株および時価総額フィルター (テクニカル合格後にのみ実行して通信を節約)
     try:
-        info = yf.Ticker(ticker).fast_info
-        m_cap = info['market_cap']
+        t_obj = yf.Ticker(ticker)
+        # 個別株(EQUITY)以外（ETF, CEF等）を除外
+        if t_obj.info.get('quoteType') != 'EQUITY':
+            return False
+            
+        m_cap = t_obj.fast_info['market_cap']
         if not (MIN_MARKET_CAP <= m_cap <= MAX_MARKET_CAP):
             return False
     except:
