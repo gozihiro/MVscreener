@@ -14,6 +14,7 @@ CLIENT_ID = os.environ.get('CLIENT_ID')
 CLIENT_SECRET = os.environ.get('CLIENT_SECRET')
 REFRESH_TOKEN = os.environ.get('REFRESH_TOKEN')
 SUMMARY_FOLDER_ID = os.environ.get('SUMMARY_FOLDER_ID')
+ACCUMULATION_FOLDER_ID = os.environ.get('ACCUMULATION_FOLDER_ID')
 
 def get_drive_service():
     """Google Drive API 認可"""
@@ -26,7 +27,70 @@ def get_drive_service():
     )
     return build('drive', 'v3', credentials=creds)
 
-def create_intelligence_report(df):
+def get_accumulation_ranking(service):
+    """Accumulationフォルダ内のCSVを解析しランキングデータを生成"""
+    states = []
+    page_token = None
+    query = f"'{ACCUMULATION_FOLDER_ID}' in parents and trashed = false"
+    
+    while True:
+        results = service.files().list(q=query, fields="nextPageToken, files(id, name)", pageToken=page_token).execute()
+        for f in results.get('files', []):
+            if f['name'].startswith('['):
+                try:
+                    parts = f['name'].split('_')
+                    persistence = int(parts[0][1:3])
+                    ticker = parts[1]
+                    
+                    # CSVの中身をダウンロードして解析
+                    request = service.files().get_media(fileId=f['id'])
+                    fh = io.BytesIO()
+                    downloader = MediaIoBaseDownload(fh, request)
+                    done = False
+                    while not done: _, done = downloader.next_chunk()
+                    fh.seek(0)
+                    df = pd.read_csv(fh)
+                    
+                    if len(df) < 10: continue
+                    
+                    # 1. ジリ高継続性 (過去10日の陽線・続伸率)
+                    df['is_up'] = (df['Close'] > df['Open']) & (df['Close'] > df['Close'].shift(1))
+                    consistency = (df['is_up'].tail(10).sum() / 10) * 100
+                    
+                    # 2. 新高値接近率 (50日高値との距離)
+                    high_50 = df['High'].max()
+                    last_close = df['Close'].iloc[-1]
+                    proximity = (last_close / high_50) * 100
+                    
+                    # 3. 値幅のタイトネス (直近値幅 vs 平均値幅)
+                    df['range'] = df['High'] - df['Low']
+                    avg_range = df['range'].tail(10).mean()
+                    tightness = (1 - (df['range'].iloc[-1] / avg_range)) * 100 if avg_range > 0 else 0
+                    
+                    # 4. エルダー流インパルス (13EMA & MACD)
+                    ema13 = df['Close'].ewm(span=13, adjust=False).mean()
+                    macd = df['Close'].ewm(span=12, adjust=False).mean() - df['Close'].ewm(span=26, adjust=False).mean()
+                    impulse = 1 if (ema13.iloc[-1] > ema13.iloc[-2] and macd.iloc[-1] > macd.iloc[-2]) else 0
+                    
+                    # 総合スコア算出 (重み付け)
+                    score = (consistency * 0.3) + (proximity * 0.4) + (max(0, tightness) * 0.2) + (impulse * 10)
+                    
+                    states.append({
+                        "ticker": ticker,
+                        "persistence": persistence,
+                        "score": round(score, 1),
+                        "consistency": round(consistency, 0),
+                        "proximity": round(proximity, 1),
+                        "tightness": "タイト" if tightness > 20 else "通常",
+                        "impulse": "Blue" if impulse == 1 else "Neutral"
+                    })
+                except: continue
+        page_token = results.get('nextPageToken')
+        if not page_token: break
+        
+    return states
+
+def create_intelligence_report(df, acc_data=[]):
     """HTMLレポート生成（散布図の配色・レイヤーを抜本修正）"""
     # 1. 日付列の特定 (MM/DD 形式)
     date_cols = sorted([c for c in df.columns if '価格_' in c])
@@ -89,7 +153,8 @@ def create_intelligence_report(df):
     full_data_payload = {
         "dates": [f"2026/{d}" for d in dates],
         "market": market_data,
-        "stocks": stocks_json
+        "stocks": stocks_json,
+        "accumulation": acc_data
     }
 
     # 4. HTML/JS テンプレート
@@ -120,6 +185,7 @@ def create_intelligence_report(df):
             .pattern-tag {{ color: #95a5a6; font-size: 0.8em; font-style: italic; border-top: 1px solid #eee; padding-top: 10px; }}
             .explanation-box {{ background: #eef7fd; border-left: 5px solid #3498db; padding: 15px; margin-top: 15px; font-size: 0.9em; line-height: 1.6; }}
             .score-highlight {{ color: #f39c12; font-weight: bold; }}
+            .tier-header {{ background: #2c3e50; color: white; padding: 10px 20px; border-radius: 10px; margin-bottom: 15px; display: inline-block; }}
         </style>
     </head>
     <body>
@@ -141,6 +207,8 @@ def create_intelligence_report(df):
                     ・<b>売り抜け日（赤棒）：</b> 指数の下落と出来高増が重なった「機関投資家の出口戦略」の痕跡。6〜7日を超えると「下落警戒」となります。
                 </div>
             </div>
+
+            <div id="accumulation-ranking-area"></div>
 
             <div id="dynamic-rankings-area"></div>
 
@@ -187,6 +255,39 @@ def create_intelligence_report(df):
                     <div>A/D比<br><span>${{mEnd.ad.toFixed(2)}}</span></div>
                     <div>売り抜け日<br><span>${{mEnd.dist}}日</span></div>
                 `;
+
+                // Accumulation Ranking Rendering
+                let accHtml = '<div class="card"><h2 style="margin-top:0;">💎 Accumulation Survival Ranking</h2>';
+                const accTiers = [
+                    {{ label: "🔥 熟成 (10日以上)", filter: d => d.persistence >= 10 }},
+                    {{ label: "✅ 確立 (5〜9日)", filter: d => d.persistence >= 5 && d.persistence <= 9 }},
+                    {{ label: "🌱 出現 (1〜4日)", filter: d => d.persistence <= 4 }}
+                ];
+
+                accTiers.forEach(tier => {{
+                    const tierData = data.accumulation.filter(tier.filter).sort((a,b) => b.score - a.score);
+                    if(tierData.length > 0) {{
+                        accHtml += `<div class="tier-header">${{tier.label}}</div><div class="rank-grid" style="margin-bottom:30px;">`;
+                        tierData.slice(0, 10).forEach((s, idx) => {{
+                            accHtml += `
+                                <div class="rank-card">
+                                    <div class="rank-badge">${{idx+1}}</div>
+                                    <span class="persistence-tag">${{s.persistence}}日出現</span>
+                                    <h3 style="margin:5px 0;">${{s.ticker}}</h3>
+                                    <div class="metric-box">
+                                        <div class="metric-row"><span>総合Score</span> <b class="score-highlight">${{s.score}}</b></div>
+                                        <div class="metric-row"><span>続伸率</span> <b>${{s.consistency}}%</b></div>
+                                        <div class="metric-row"><span>新高値比</span> <b>${{s.proximity}}%</b></div>
+                                        <div class="metric-row"><span>VCP収縮</span> <b>${{s.tightness}}</b></div>
+                                    </div>
+                                    <div class="pattern-tag" style="color:${{s.impulse === 'Blue' ? '#3498db' : '#95a5a6'}}">Impulse: ${{s.impulse}}</div>
+                                </div>`;
+                        }});
+                        accHtml += '</div>';
+                    }}
+                }});
+                accHtml += '</div>';
+                document.getElementById('accumulation-ranking-area').innerHTML = accHtml;
 
                 const analyzed = data.stocks.map(s => {{
                     const pricesInPeriod = targetDates.map(d => s.prices[d]).filter(p => p !== null);
@@ -320,7 +421,7 @@ def create_intelligence_report(df):
                         colorbar: {{title: 'Score', titleside: 'right'}} 
                     }}
                 }}], {{ xaxis: {{title: '出現日数'}}, yaxis: {{title: '期間騰落率(%)'}}, margin: {{t:20, b:40, l:50, r:50}}, template: 'plotly_white' }});
-            }}
+            }
             handleDateChange();
         </script>
     </body>
@@ -358,6 +459,10 @@ if __name__ == "__main__":
     while not done: _, done = downloader.next_chunk()
     fh.seek(0)
     trend_df = pd.read_csv(fh, dtype=str)
-    html_report = create_intelligence_report(trend_df)
+    
+    # Accumulation Ranking Dataの取得
+    accumulation_data = get_accumulation_ranking(service)
+    
+    html_report = create_intelligence_report(trend_df, accumulation_data)
     report_filename = csv_name.replace('weekly_detailed_trend', 'interactive_ranking').replace('.csv', '.html')
     upload_to_drive(html_report, report_filename)
