@@ -36,6 +36,7 @@ def get_detailed_pulse():
     
     # 1. 指数位置判定 (3.0pts)
     report.append("\n【1. Index vs Open】")
+    report.append("→ 始値より上で推移 = 寄り付きの売りを吸収した証拠。")
     indices = {"Nasdaq": "^IXIC", "S&P500": "^GSPC"}
     for name, ticker in indices.items():
         data = yf.download(ticker, period="1d", interval="1m", progress=False, auto_adjust=True)
@@ -54,36 +55,28 @@ def get_detailed_pulse():
                 status = "🔴陰線"
             report.append(f" ・{name}: {status} ({diff:+.2f}%)")
 
-    # 2. RVOL判定 (3.0pts) - 【時刻スライスによる精度向上版】
-    report.append("\n【2. Volume Energy (RVOL)】")
+    # 2. RVOL判定 (3.0pts)
+    report.append("\n【2. Volume Energy】")
+    report.append("→ 同時刻比1.2x以上 = 機関投資家が『本気』で動いているサイン。")
     etfs = {"SPY": "SPY", "QQQ": "QQQ"}
     for name, ticker in etfs.items():
-        # 過去20日分の5分足を取得
         hist = yf.download(ticker, period="20d", interval="5m", progress=False, auto_adjust=True)
         if hist.empty: continue
         if isinstance(hist.columns, pd.MultiIndex):
             hist.columns = hist.columns.get_level_values(0)
 
-        # 現在の時刻（時:分）と今日の日付を取得
         current_time = hist.index[-1].time()
         today_date = hist.index[-1].date()
-
-        # 過去のユニークな日付リストを作成
         unique_dates = pd.Series(hist.index.date).unique()
         
         past_vols = []
         for d in unique_dates:
             if d == today_date: continue
-            
-            # 各日のデータを抽出し、寄り付き(09:30)から「現在と同じ時刻」までを厳密にスライス
             daily_data = hist[hist.index.date == d]
-            # between_timeを使用することで、欠損があっても指定時刻までの出来高を正確に合計可能
             vol_until_now = daily_data.between_time("09:30", current_time)['Volume'].sum()
-            
             if vol_until_now > 0:
                 past_vols.append(vol_until_now)
 
-        # 期待出来高（過去平均）の算出
         expected_vol = sum(past_vols) / len(past_vols) if past_vols else 0
         actual_vol = hist[hist.index.date == today_date].Volume.sum()
 
@@ -100,6 +93,7 @@ def get_detailed_pulse():
 
     # 3. 需給の質判定 (4.0pts)
     report.append("\n【3. Internal Strength】")
+    report.append("→ TRIN 1.0未満 = 上昇銘柄に資金が集中する質の高い相場。")
     sample_tickers = ["AAPL","MSFT","AMZN","NVDA","GOOGL","META","TSLA","AVGO","COST","PEP","ADBE","AMD","NFLX","INTC","TMUS","AMAT","QCOM","TXN","ISRG","HON","SBUX","AMGN","VRTX","MDLZ","PANW","REGN","LRCX","ADI","BKNG","MU"]
     sample_data = yf.download(sample_tickers, period="1d", interval="5m", progress=False, auto_adjust=True)
     
