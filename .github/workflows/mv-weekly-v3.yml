@@ -32,6 +32,7 @@ jobs:
           REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
           SUMMARY_FOLDER_ID: ${{ secrets.SUMMARY_FOLDER_ID }}
+          ACCUMULATION_FOLDER_ID: ${{ secrets.ACCUMULATION_FOLDER_ID }}
         run: python MVpreAnalysisV2.py
 
       # --- Phase 2: V3ロジックによる発射台スコア対応レポートの生成 ---
