@@ -3,6 +3,7 @@ import pandas as pd
 import requests
 import json
 import os
+import random
 from datetime import datetime
 
 # --- GitHub Secretsから環境変数を取得 ---
@@ -35,86 +36,105 @@ def get_detailed_pulse():
     
     # 1. 指数位置判定 (3.0pts)
     report.append("\n【1. Index vs Open】")
-    report.append("→ 始値より上で推移 = 寄り付きの売りを吸収した証拠。")
     indices = {"Nasdaq": "^IXIC", "S&P500": "^GSPC"}
     for name, ticker in indices.items():
         data = yf.download(ticker, period="1d", interval="1m", progress=False, auto_adjust=True)
         if not data.empty:
-            # マルチインデックス対策: 列を平坦化
             if isinstance(data.columns, pd.MultiIndex):
                 data.columns = data.columns.get_level_values(0)
             
             open_p = float(data['Open'].iloc[0])
             curr_p = float(data['Close'].iloc[-1])
             
+            diff = (curr_p / open_p - 1) * 100
             if curr_p > open_p:
                 score += 1.5
-                status = "🟢上"
+                status = "🟢陽線"
             else:
-                status = "🔴下"
-            diff = (curr_p / open_p - 1) * 100
+                status = "🔴陰線"
             report.append(f" ・{name}: {status} ({diff:+.2f}%)")
 
-    # 2. RVOL判定 (3.0pts)
-    report.append("\n【2. Volume Energy】")
-    report.append("→ 同時刻比1.2x以上 = 機関投資家が『本気』で動いているサイン。")
+    # 2. RVOL判定 (3.0pts) - 【時刻スライスによる精度向上版】
+    report.append("\n【2. Volume Energy (RVOL)】")
     etfs = {"SPY": "SPY", "QQQ": "QQQ"}
     for name, ticker in etfs.items():
-        hist = yf.download(ticker, period="10d", interval="5m", progress=False, auto_adjust=True)
+        # 過去20日分の5分足を取得
+        hist = yf.download(ticker, period="20d", interval="5m", progress=False, auto_adjust=True)
         if hist.empty: continue
-        
-        # マルチインデックス対策
         if isinstance(hist.columns, pd.MultiIndex):
             hist.columns = hist.columns.get_level_values(0)
-            
-        today = hist[hist.index.date == hist.index.date[-1]]
-        past = hist[hist.index.date < hist.index.date[-1]]
-        elapsed_bars = len(today)
-        expected_vol = past.groupby(past.index.date)['Volume'].apply(lambda x: x.iloc[:elapsed_bars].sum()).mean()
-        actual_vol = float(today['Volume'].sum())
+
+        # 現在の時刻（時:分）と今日の日付を取得
+        current_time = hist.index[-1].time()
+        today_date = hist.index[-1].date()
+
+        # 過去のユニークな日付リストを作成（重複計算を避けるため）
+        unique_dates = pd.Series(hist.index.date).unique()
         
+        past_vols = []
+        for d in unique_dates:
+            if d == today_date: continue
+            
+            # 各日のデータを抽出し、寄り付きから「現在と同じ時刻」までをスライス
+            daily_data = hist[hist.index.date == d]
+            # 文字列でのスライスにより、その時刻までのデータを確実に合計
+            vol_until_now = daily_data.at_time(current_time, asof=True).Volume.sum() # 安全策
+            # または直感的なスライス: 
+            vol_until_now = daily_data[:current_time.strftime('%H:%M')].Volume.sum()
+            
+            if vol_until_now > 0:
+                past_vols.append(vol_until_now)
+
+        # 期待出来高（過去平均）の算出
+        expected_vol = sum(past_vols) / len(past_vols) if past_vols else 0
+        actual_vol = hist[hist.index.date == today_date].Volume.sum()
+
         rvol = actual_vol / expected_vol if expected_vol > 0 else 0
-        if rvol >= 1.2: score += 1.5
-        report.append(f" ・{name} RVOL: {rvol:.2f}x {'🔥' if rvol > 1.2 else '⚪︎'}")
+        
+        if rvol >= 1.2: 
+            score += 1.5
+            emoji = "🔥" 
+        elif rvol >= 1.0:
+            emoji = "✅"
+        else:
+            emoji = "💤"
+        report.append(f" ・{name} RVOL: {rvol:.2f}x {emoji}")
 
     # 3. 需給の質判定 (4.0pts)
     report.append("\n【3. Internal Strength】")
-    report.append("→ TRIN 1.0未満 = 上昇銘柄に資金が集中する質の高い相場。")
     sample_tickers = ["AAPL","MSFT","AMZN","NVDA","GOOGL","META","TSLA","AVGO","COST","PEP","ADBE","AMD","NFLX","INTC","TMUS","AMAT","QCOM","TXN","ISRG","HON","SBUX","AMGN","VRTX","MDLZ","PANW","REGN","LRCX","ADI","BKNG","MU"]
-    sample_data = yf.download(sample_tickers, period="1d", interval="1m", progress=False, auto_adjust=True)
+    sample_data = yf.download(sample_tickers, period="1d", interval="5m", progress=False, auto_adjust=True)
     
     if not sample_data.empty:
         adv, dec, adv_v, dec_v = 0, 0, 0, 0
         for t in sample_tickers:
             try:
-                # 特定銘柄のデータを抽出
                 if isinstance(sample_data.columns, pd.MultiIndex):
-                    ticker_data = sample_data.xs(t, axis=1, level=1)
+                    t_data = sample_data.xs(t, axis=1, level=1).dropna()
                 else:
-                    ticker_data = sample_data
+                    t_data = sample_data.dropna()
                 
-                if ticker_data.empty: continue
+                if t_data.empty: continue
                 
-                c = ticker_data['Close'].dropna()
-                o = ticker_data['Open'].dropna()
-                v = ticker_data['Volume'].dropna()
+                c_last = t_data['Close'].iloc[-1]
+                o_first = t_data['Open'].iloc[0]
+                v_total = t_data['Volume'].sum()
                 
-                if not c.empty and not o.empty:
-                    if float(c.iloc[-1]) > float(o.iloc[0]):
-                        adv += 1; adv_v += float(v.sum())
-                    else:
-                        dec += 1; dec_v += float(v.sum())
+                if c_last > o_first:
+                    adv += 1; adv_v += v_total
+                else:
+                    dec += 1; dec_v += v_total
             except: continue
         
         if dec > 0 and dec_v > 0:
             trin = (adv/dec) / (adv_v/dec_v) if (adv_v/dec_v) > 0 else 0
             adv_rate = adv / len(sample_tickers)
-            if trin < 1.0: score += 2.0
-            if adv_rate >= 0.6: score += 2.0
-            report.append(f" ・TRIN近似: {trin:.2f}")
-            report.append(f" ・値上がり比: {int(adv_rate*100)}%")
+            if trin < 0.85: score += 2.0
+            if adv_rate >= 0.7: score += 2.0
+            report.append(f" ・TRIN近似: {trin:.2f} ({'強気' if trin < 1 else '弱気'})")
+            report.append(f" ・値上がり比: {int(adv_rate*100)}% ({adv}/{len(sample_tickers)})")
 
-    # 総合判定ランク
+    # 総合判定
     rank = "S [点火日]" if score >= 8.5 else "A [良好]" if score >= 6.5 else "B [拮抗]" if score >= 4.0 else "C [危険]"
     summary = f"\n━━━━━━━━━━━━\n総合スコア: {score:.1f} / 10.0\n判定ランク: {rank}\n━━━━━━━━━━━━"
     
