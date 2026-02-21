@@ -42,4 +42,5 @@ jobs:
           CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
           REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
           SUMMARY_FOLDER_ID: ${{ secrets.SUMMARY_FOLDER_ID }}
+          ACCUMULATION_FOLDER_ID: ${{ secrets.ACCUMULATION_FOLDER_ID }}
         run: python MVweeklyReport_V3.py
