@@ -421,7 +421,7 @@ def create_intelligence_report(df, acc_data=[]):
                         colorbar: {{title: 'Score', titleside: 'right'}} 
                     }}
                 }}], {{ xaxis: {{title: '出現日数'}}, yaxis: {{title: '期間騰落率(%)'}}, margin: {{t:20, b:40, l:50, r:50}}, template: 'plotly_white' }});
-            }
+            }}
             handleDateChange();
         </script>
     </body>
