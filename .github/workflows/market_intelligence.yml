@@ -1,22 +1,18 @@
 name: Market Intelligence Bot
 
 on:
-  schedule:
-    # 14:40 UTC (23:40 JST) と 15:00 UTC (00:00 JST) の2回実行
-    - cron: '40 14 * * 1-5'
-    - cron: '0 15 * * 1-5'
-  workflow_dispatch: # 手動実行ボタンも有効にします
+  workflow_dispatch: # 手動実行のみを有効にします
 
 jobs:
   run_bot:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4 # 最新のv4への更新を推奨します
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5 # 最新のv5への更新を推奨します
         with:
-          python-version: '3.9'
+          python-version: '3.11' # 他のスクリプトと合わせて3.11にしておくと安定します
 
       - name: Install dependencies
         run: |
