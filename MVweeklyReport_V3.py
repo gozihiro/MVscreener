@@ -186,6 +186,14 @@ def create_intelligence_report(df, acc_data=[]):
             .explanation-box {{ background: #eef7fd; border-left: 5px solid #3498db; padding: 15px; margin-top: 15px; font-size: 0.9em; line-height: 1.6; }}
             .score-highlight {{ color: #f39c12; font-weight: bold; }}
             .tier-header {{ background: #2c3e50; color: white; padding: 10px 20px; border-radius: 10px; margin-bottom: 15px; display: inline-block; }}
+            
+            /* 新設：コンパクトな表形式のスタイル */
+            .acc-table {{ width: 100%; border-collapse: collapse; font-size: 0.85em; margin-bottom: 10px; background: white; }}
+            .acc-table th, .acc-table td {{ border-bottom: 1px solid #eee; padding: 8px 10px; text-align: left; }}
+            .acc-table th {{ color: #7f8c8d; font-weight: normal; background: #fafafa; border-top: 1px solid #eee; }}
+            .acc-table .ticker-name {{ font-weight: bold; color: #1a2a3a; font-size: 1.1em; }}
+            .acc-table .score-val {{ font-weight: bold; color: #f39c12; }}
+            .acc-table tr:hover {{ background: #fcfcfc; }}
         </style>
     </head>
     <body>
@@ -256,7 +264,7 @@ def create_intelligence_report(df, acc_data=[]):
                     <div>売り抜け日<br><span>${{mEnd.dist}}日</span></div>
                 `;
 
-                // Accumulation Ranking Rendering
+                // Accumulation Ranking Rendering (Table Style)
                 let accHtml = '<div class="card"><h2 style="margin-top:0;">💎 Accumulation Survival Ranking</h2>';
                 const accTiers = [
                     {{ label: "🔥 熟成 (10日以上)", filter: d => d.persistence >= 10 }},
@@ -267,23 +275,38 @@ def create_intelligence_report(df, acc_data=[]):
                 accTiers.forEach(tier => {{
                     const tierData = data.accumulation.filter(tier.filter).sort((a,b) => b.score - a.score);
                     if(tierData.length > 0) {{
-                        accHtml += `<div class="tier-header">${{tier.label}}</div><div class="rank-grid" style="margin-bottom:30px;">`;
-                        tierData.slice(0, 10).forEach((s, idx) => {{
+                        accHtml += `<div class="tier-header">${{tier.label}}</div>`;
+                        accHtml += `
+                            <table class="acc-table">
+                                <thead>
+                                    <tr>
+                                        <th>#</th>
+                                        <th>銘柄</th>
+                                        <th>出現</th>
+                                        <th>総合Score</th>
+                                        <th>続伸率</th>
+                                        <th>新高値比</th>
+                                        <th>VCP</th>
+                                        <th>Impulse</th>
+                                    </tr>
+                                </thead>
+                                <tbody>`;
+                        
+                        tierData.forEach((s, idx) => {{
                             accHtml += `
-                                <div class="rank-card">
-                                    <div class="rank-badge">${{idx+1}}</div>
-                                    <span class="persistence-tag">${{s.persistence}}日出現</span>
-                                    <h3 style="margin:5px 0;">${{s.ticker}}</h3>
-                                    <div class="metric-box">
-                                        <div class="metric-row"><span>総合Score</span> <b class="score-highlight">${{s.score}}</b></div>
-                                        <div class="metric-row"><span>続伸率</span> <b>${{s.consistency}}%</b></div>
-                                        <div class="metric-row"><span>新高値比</span> <b>${{s.proximity}}%</b></div>
-                                        <div class="metric-row"><span>VCP収縮</span> <b>${{s.tightness}}</b></div>
-                                    </div>
-                                    <div class="pattern-tag" style="color:${{s.impulse === 'Blue' ? '#3498db' : '#95a5a6'}}">Impulse: ${{s.impulse}}</div>
-                                </div>`;
+                                <tr>
+                                    <td>${{idx+1}}</td>
+                                    <td class="ticker-name">${{s.ticker}}</td>
+                                    <td>${{s.persistence}}日</td>
+                                    <td class="score-val">${{s.score}}</td>
+                                    <td>${{s.consistency}}%</td>
+                                    <td>${{s.proximity}}%</td>
+                                    <td>${{s.tightness}}</td>
+                                    <td style="color:${{s.impulse === 'Blue' ? '#3498db' : '#95a5a6'}}">${{s.impulse}}</td>
+                                </tr>`;
                         }});
-                        accHtml += '</div>';
+                        
+                        accHtml += '</tbody></table><div style="margin-bottom:20px;"></div>';
                     }}
                 }});
                 accHtml += '</div>';
@@ -390,7 +413,7 @@ def create_intelligence_report(df, acc_data=[]):
                             <span class="persistence-tag">${{s.persistence}}日出現</span>
                             <h3 style="margin:5px 0;">${{s.ticker}}</h3>
                             <div class="metric-box">
-                                <div class="metric-row"><span>${{sec.title.includes('Stealth') ? '隠密Score' : '発射台Score'}}</span> <b class="score-highlight">${{sec.title.includes('Momentum') ? s.momentumStealthScore : (sec.title.includes('Stealth') ? s.stealthScore : (sec.title.includes('Ready') ? s.latestLaunchpad : s.launchpad))}}</b></div>
+                                <div class="metric-row"><span>${{sec.title.includes('Stealth') ? '隠密Score' : '発射台Score'}}</span> <b class="score-highlight">${{s.momentumStealthScore || s.stealthScore || s.latestLaunchpad || s.launchpad}}</b></div>
                                 <div class="metric-row"><span>期間騰落</span> <b style="color:${{s.change >=0 ? '#e74c3c':'#2980b9'}}">${{s.change.toFixed(1)}}%</b></div>
                                 <div class="metric-row"><span>売上成長</span> <b>${{s.growth}}%</b></div>
                             </div>
@@ -421,7 +444,7 @@ def create_intelligence_report(df, acc_data=[]):
                         colorbar: {{title: 'Score', titleside: 'right'}} 
                     }}
                 }}], {{ xaxis: {{title: '出現日数'}}, yaxis: {{title: '期間騰落率(%)'}}, margin: {{t:20, b:40, l:50, r:50}}, template: 'plotly_white' }});
-            }}
+            }
             handleDateChange();
         </script>
     </body>
