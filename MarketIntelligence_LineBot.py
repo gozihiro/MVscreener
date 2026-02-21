@@ -68,19 +68,17 @@ def get_detailed_pulse():
         current_time = hist.index[-1].time()
         today_date = hist.index[-1].date()
 
-        # 過去のユニークな日付リストを作成（重複計算を避けるため）
+        # 過去のユニークな日付リストを作成
         unique_dates = pd.Series(hist.index.date).unique()
         
         past_vols = []
         for d in unique_dates:
             if d == today_date: continue
             
-            # 各日のデータを抽出し、寄り付きから「現在と同じ時刻」までをスライス
+            # 各日のデータを抽出し、寄り付き(09:30)から「現在と同じ時刻」までを厳密にスライス
             daily_data = hist[hist.index.date == d]
-            # 文字列でのスライスにより、その時刻までのデータを確実に合計
-            vol_until_now = daily_data.at_time(current_time, asof=True).Volume.sum() # 安全策
-            # または直感的なスライス: 
-            vol_until_now = daily_data[:current_time.strftime('%H:%M')].Volume.sum()
+            # between_timeを使用することで、欠損があっても指定時刻までの出来高を正確に合計可能
+            vol_until_now = daily_data.between_time("09:30", current_time)['Volume'].sum()
             
             if vol_until_now > 0:
                 past_vols.append(vol_until_now)
