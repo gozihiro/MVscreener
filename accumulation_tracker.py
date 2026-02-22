@@ -51,6 +51,40 @@ def get_all_us_tickers():
     except:
         return []
 
+def check_growth_qualities(df):
+    """ミネルヴィニ流トレンドテンプレート(Stage 2)の主要条件判定"""
+    try:
+        if len(df) < 250: return False
+        
+        c = df['Close']
+        sma50 = c.rolling(window=50).mean().iloc[-1]
+        sma150 = c.rolling(window=150).mean().iloc[-1]
+        sma200 = c.rolling(window=200).mean().iloc[-1]
+        sma200_20d_ago = c.rolling(window=200).mean().iloc[-20]
+        low_52w = df['Low'].rolling(window=250).min().iloc[-1]
+        high_52w = df['High'].rolling(window=250).max().iloc[-1]
+        curr = c.iloc[-1]
+
+        # 1. 価格が150日と200日の上にある
+        # 2. 150日線が200日線の基準より上にある
+        # 3. 200日線が少なくとも1ヶ月上昇トレンド
+        # 4. 50日線が150日と200日の上にある
+        # 5. 価格が50日線の上にある
+        # 6. 価格が52週安値より30%以上高い
+        # 7. 価格が52週高値から25%以内にある
+        cond = [
+            curr > sma150 and curr > sma200,
+            sma150 > sma200,
+            sma200 > sma200_20d_ago,
+            sma50 > sma150 and sma50 > sma200,
+            curr > sma50,
+            curr >= low_52w * 1.30,
+            curr >= high_52w * 0.75
+        ]
+        return all(cond)
+    except:
+        return False
+
 def is_accumulation_stealth(df, ticker):
     """JMIA型 判定ロジック：10日中7日陽線 ＋ 7.7%幅 ＋ 短期序列 ＋ 10EMA密着"""
     if len(df) < 60: return False # MA50の安定計算のため期間を確保
@@ -139,8 +173,8 @@ def run_tracker():
     for i in range(0, len(watchlist), BATCH_SIZE):
         batch = watchlist[i:i + BATCH_SIZE]
         try:
-            # バッチ一括ダウンロード
-            data = yf.download(batch, period="6mo", interval="1d", progress=False, auto_adjust=True, threads=True)
+            # バッチ一括ダウンロード（52週データ計算のため2年に延長）
+            data = yf.download(batch, period="2y", interval="1d", progress=False, auto_adjust=True, threads=True)
             if data.empty:
                 time.sleep(BATCH_SLEEP_BASE)
                 continue
@@ -157,9 +191,13 @@ def run_tracker():
                     
                     # 条件判定
                     if is_accumulation_stealth(df, ticker):
+                        # 追加の成長株ロジック判定
+                        is_sp = check_growth_qualities(df)
+                        suffix = "_SP" if is_sp else ""
+
                         prev_state = current_states.get(ticker)
                         new_count = (prev_state['count'] + 1) if prev_state else 1
-                        new_filename = f"[{new_count:02d}]_{ticker}_{today_str}.csv"
+                        new_filename = f"[{new_count:02d}]_{ticker}_{today_str}{suffix}.csv"
                         
                         # フォルダ内の古い同銘柄ファイルを削除
                         if prev_state:
@@ -173,7 +211,9 @@ def run_tracker():
                         meta = {'name': new_filename, 'parents': [ACCUMULATION_FOLDER_ID]}
                         service.files().create(body=meta, media_body=media).execute()
                         
-                        print(f"Update: {ticker} (Day {new_count})")
+                        msg = f"Update: {ticker} (Day {new_count})"
+                        if is_sp: msg += " [Super Performer Qualities]"
+                        print(msg)
                         processed_tickers.add(ticker)
                 except:
                     continue
