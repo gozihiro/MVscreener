@@ -89,12 +89,15 @@ def calculate_ticker_rvol_report(ticker):
         rvol = actual_vol / expected_vol if expected_vol > 0 else 0
         
         # B. MVP指標判定 (直近15日)
-        recent_15 = hist_1d.tail(15)
-        prev_15 = hist_1d.iloc[-30:-15] # 比較用の直前15日間
+        recent_16 = hist_1d.tail(16) # 変化率計算のため16日分
+        prev_15 = hist_1d.iloc[-31:-16] # 比較用の前の15日間
         
-        m_count = (recent_15['Close'] > recent_15['Close'].shift(1)).sum()
-        v_ratio = recent_15['Volume'].mean() / prev_15['Volume'].mean() if not prev_15['Volume'].mean() == 0 else 0
-        p_change = (recent_15['Close'].iloc[-1] / recent_15['Close'].iloc[0]) - 1
+        # M: 15日中何日上昇したか
+        m_count = (recent_16['Close'] > recent_16['Close'].shift(1)).tail(15).sum()
+        # V: 前15日平均比での出来高増加率
+        v_ratio = hist_1d['Volume'].tail(15).mean() / prev_15['Volume'].mean() if not prev_15['Volume'].mean() == 0 else 0
+        # P: 15日間の価格上昇率 (15日前の終値と比較)
+        p_change = (hist_1d['Close'].iloc[-1] / hist_1d['Close'].iloc[-16]) - 1
 
         # 各項目の合否判定
         m_ok = m_count >= 12
@@ -109,34 +112,45 @@ def calculate_ticker_rvol_report(ticker):
             f"P: {'○' if p_ok else '×'} ({p_change*100:+.1f}% 上昇)"
         )
 
-        # C. テクニカル・危険信号判定
+        # C. テクニカル・防衛線判定
         c = hist_1d['Close']
         price_now = c.iloc[-1]
-        ema10 = c.ewm(span=10, adjust=False).mean().iloc[-1]
-        sma20 = c.rolling(window=20).mean().iloc[-1]
         sma200 = c.rolling(window=200).mean().iloc[-1]
+        sma50 = c.rolling(window=50).mean().iloc[-1]
+        sma20 = c.rolling(window=20).mean().iloc[-1]
+        ema10 = c.ewm(span=10, adjust=False).mean().iloc[-1]
         
+        # エルダー流インパルス判定 (危険信号用)
         ema13 = c.ewm(span=13, adjust=False).mean()
         macd = c.ewm(span=12, adjust=False).mean() - c.ewm(span=26, adjust=False).mean()
         is_red = (ema13.iloc[-1] < ema13.iloc[-2] and macd.iloc[-1] < macd.iloc[-2])
         extension = (price_now / sma200 - 1) * 100 if sma200 > 0 else 0
         
+        # 乖離率に応じた動的サポート設定
+        if extension < 50:
+            supp_name, supp_price, phase = "50SMA", sma50, "初動〜巡航"
+            advice = "トレンド初動。50SMAを割らない限り、大きなトレンド継続を期待してホールド。"
+        elif extension < 80:
+            supp_name, supp_price, phase = "20SMA", sma20, "加速"
+            advice = "加速フェーズ。20SMAをベースに、利益を最大限伸ばしてください。"
+        else:
+            supp_name, supp_price, phase = "10EMA", ema10, "クライマックス（過熱）"
+            advice = "過熱局面。10EMAを割った場合は即座の利益確定を強く推奨。"
+
         dangers = []
         if price_now < ema10: dangers.append("短期10EMA割れ")
-        if price_now < sma20: dangers.append("20SMA割れ(Stage脱落警戒)")
+        if price_now < sma20: dangers.append("20SMA割れ(中期トレンド変質)")
         if is_red: dangers.append("インパルス・赤(弱気転換)")
-        if extension >= 50: dangers.append("200MA乖離過大(過熱)")
+        if extension >= 80: dangers.append("歴史的乖離(クライマックス警戒)")
 
         # D. メッセージ構築
         if mvp_all:
-            if extension >= 50:
-                mvp_status = "🚨【MVP売り】クライマックス・トップ。"
-            else:
-                mvp_status = "🚀【MVP点火】強力なブレイクアウト初動。"
+            mvp_status_title = "🚨【MVP売り】" if extension >= 80 else "🚀【MVP点火】"
+            mvp_result = f"{mvp_status_title}\nMVP条件をすべて満たしました。"
         elif dangers:
-            mvp_status = "⚠️【危険信号】\n・" + "\n・".join(dangers)
+            mvp_result = f"⚠️【危険信号】\n・" + "\n・".join(dangers)
         else:
-            mvp_status = "✅【現状維持】特筆すべき過熱や崩れなし。"
+            mvp_result = "✅【現状維持】特筆すべき過熱や崩れなし。"
 
         emoji = "🔥" if rvol >= 1.5 else "✅" if rvol >= 1.0 else "💤"
         change = (price_now / float(today_data_5m['Open'].iloc[0]) - 1) * 100
@@ -148,7 +162,11 @@ def calculate_ticker_rvol_report(ticker):
                 f"----------\n"
                 f"MVP詳細判定:\n{mvp_details}\n"
                 f"----------\n"
-                f"{mvp_status}\n\n"
+                f"💡 ミネルヴィニ流アドバイス:\n"
+                f"現在は **{phase}** の局面にあります。\n"
+                f"[戦略] {advice}\n"
+                f"[防衛線] **{supp_name} (${supp_price:.2f})**\n\n"
+                f"判定: {mvp_result}\n\n"
                 f"※過去20日同時刻平均比較")
     except Exception as e:
         return f"❌ エラー: {str(e)}"
