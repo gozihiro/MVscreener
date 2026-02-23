@@ -1,6 +1,8 @@
 import os
 import yfinance as yf
 import pandas as pd
+import json
+import random
 from datetime import datetime
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -32,10 +34,15 @@ def callback(request):
 
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
-    ticker_symbol = event.message.text.upper().strip()
+    user_text = event.message.text.strip()
     
-    # RVOL算出ロジック (高精度版)
-    reply_text = calculate_rvol_report(ticker_symbol)
+    # 「Market」入力判定 (大文字小文字を区別しない)
+    if user_text.lower() == "market":
+        reply_text = get_market_intelligence_report()
+    else:
+        # 銘柄名として処理
+        ticker_symbol = user_text.upper()
+        reply_text = calculate_ticker_rvol_report(ticker_symbol)
     
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
@@ -46,9 +53,9 @@ def handle_message(event):
             )
         )
 
-def calculate_rvol_report(ticker):
+# --- 1. 銘柄別RVOLレポートロジック (既存) ---
+def calculate_ticker_rvol_report(ticker):
     try:
-        # 過去25日分の5分足を取得
         hist = yf.download(ticker, period="25d", interval="5m", progress=False, auto_adjust=True)
         if hist.empty:
             return f"⚠️ ${ticker}: 銘柄が見つかりません。"
@@ -56,23 +63,19 @@ def calculate_rvol_report(ticker):
         if isinstance(hist.columns, pd.MultiIndex):
             hist.columns = hist.columns.get_level_values(0)
 
-        # 直近データと時刻の特定
         latest_dt = hist.index[-1]
         today_date = latest_dt.date()
         current_time = latest_dt.time()
         
-        # 1. 今日の出来高積算
         today_data = hist[hist.index.date == today_date]
         actual_vol = today_data['Volume'].sum()
         
-        # 2. 過去20日間の同時刻平均
         past_data = hist[hist.index.date < today_date]
         unique_dates = pd.Series(past_data.index.date).unique()[-20:]
         
         past_vols = []
         for d in unique_dates:
             day_slice = past_data[past_data.index.date == d]
-            # 寄り付き(09:30)から現在と同じ時刻までを合計
             vol_until_now = day_slice.between_time("09:30", current_time)['Volume'].sum()
             if vol_until_now > 0:
                 past_vols.append(vol_until_now)
@@ -83,7 +86,6 @@ def calculate_rvol_report(ticker):
         expected_vol = sum(past_vols) / len(past_vols)
         rvol = actual_vol / expected_vol if expected_vol > 0 else 0
         
-        # レポート整形
         emoji = "🔥" if rvol >= 1.5 else "✅" if rvol >= 1.0 else "💤"
         price = float(hist['Close'].iloc[-1])
         change = (price / float(today_data['Open'].iloc[0]) - 1) * 100
@@ -93,6 +95,102 @@ def calculate_rvol_report(ticker):
                 f"価格: ${price:.2f} ({change:+.2f}% vs Open)\n"
                 f"RVOL: {rvol:.2f}x {emoji}\n\n"
                 f"※過去20日間の同時刻平均({current_time.strftime('%H:%M')}時点)と比較")
-
     except Exception as e:
         return f"❌ エラー: {str(e)}"
+
+# --- 2. 市場環境判定ロジック (統合分) ---
+def get_market_intelligence_report():
+    score = 0
+    report = []
+    report.append(f"⚖️ Market Intelligence ({datetime.now().strftime('%H:%M')})")
+    
+    try:
+        # 1. 指数位置判定
+        report.append("\n【1. Index vs Open】")
+        report.append("→ 始値より上で推移 = 寄り付きの売りを吸収した証拠。")
+        indices = {"Nasdaq": "^IXIC", "S&P500": "^GSPC"}
+        for name, ticker in indices.items():
+            data = yf.download(ticker, period="1d", interval="1m", progress=False, auto_adjust=True)
+            if not data.empty:
+                if isinstance(data.columns, pd.MultiIndex):
+                    data.columns = data.columns.get_level_values(0)
+                open_p = float(data['Open'].iloc[0])
+                curr_p = float(data['Close'].iloc[-1])
+                diff = (curr_p / open_p - 1) * 100
+                if curr_p > open_p:
+                    score += 1.5
+                    status = "🟢陽線"
+                else:
+                    status = "🔴陰線"
+                report.append(f" ・{name}: {status} ({diff:+.2f}%)")
+
+        # 2. RVOL判定
+        report.append("\n【2. Volume Energy】")
+        report.append("→ 同時刻比1.2x以上 = 機関投資家が『本気』で動いているサイン。")
+        etfs = {"SPY": "SPY", "QQQ": "QQQ"}
+        for name, ticker in etfs.items():
+            hist = yf.download(ticker, period="20d", interval="5m", progress=False, auto_adjust=True)
+            if hist.empty: continue
+            if isinstance(hist.columns, pd.MultiIndex):
+                hist.columns = hist.columns.get_level_values(0)
+
+            current_time = hist.index[-1].time()
+            today_date = hist.index[-1].date()
+            unique_dates = pd.Series(hist.index.date).unique()
+            
+            past_vols = []
+            for d in unique_dates:
+                if d == today_date: continue
+                daily_data = hist[hist.index.date == d]
+                vol_until_now = daily_data.between_time("09:30", current_time)['Volume'].sum()
+                if vol_until_now > 0:
+                    past_vols.append(vol_until_now)
+
+            expected_vol = sum(past_vols) / len(past_vols) if past_vols else 0
+            actual_vol = hist[hist.index.date == today_date].Volume.sum()
+            rvol = actual_vol / expected_vol if expected_vol > 0 else 0
+            
+            if rvol >= 1.2: score += 1.5; emoji = "🔥" 
+            elif rvol >= 1.0: emoji = "✅"
+            else: emoji = "💤"
+            report.append(f" ・{name} RVOL: {rvol:.2f}x {emoji}")
+
+        # 3. 需給の質判定
+        report.append("\n【3. Internal Strength】")
+        report.append("→ TRIN 1.0未満 = 上昇銘柄に資金が集中する質の高い相場。")
+        sample_tickers = ["AAPL","MSFT","AMZN","NVDA","GOOGL","META","TSLA","AVGO","COST","PEP","ADBE","AMD","NFLX","INTC","TMUS","AMAT","QCOM","TXN","ISRG","HON","SBUX","AMGN","VRTX","MDLZ","PANW","REGN","LRCX","ADI","BKNG","MU"]
+        sample_data = yf.download(sample_tickers, period="1d", interval="5m", progress=False, auto_adjust=True)
+        
+        if not sample_data.empty:
+            adv, dec, adv_v, dec_v = 0, 0, 0, 0
+            for t in sample_tickers:
+                try:
+                    if isinstance(sample_data.columns, pd.MultiIndex):
+                        t_data = sample_data.xs(t, axis=1, level=1).dropna()
+                    else:
+                        t_data = sample_data.dropna()
+                    if t_data.empty: continue
+                    c_last = t_data['Close'].iloc[-1]
+                    o_first = t_data['Open'].iloc[0]
+                    v_total = t_data['Volume'].sum()
+                    if c_last > o_first:
+                        adv += 1; adv_v += v_total
+                    else:
+                        dec += 1; dec_v += v_total
+                except: continue
+            
+            if dec > 0 and dec_v > 0:
+                trin = (adv/dec) / (adv_v/dec_v) if (adv_v/dec_v) > 0 else 0
+                adv_rate = adv / len(sample_tickers)
+                if trin < 0.85: score += 2.0
+                if adv_rate >= 0.7: score += 2.0
+                report.append(f" ・TRIN近似: {trin:.2f} ({'強気' if trin < 1 else '弱気'})")
+                report.append(f" ・値上がり比: {int(adv_rate*100)}% ({adv}/{len(sample_tickers)})")
+
+        # 総合判定
+        rank = "S [点火日]" if score >= 8.5 else "A [良好]" if score >= 6.5 else "B [拮抗]" if score >= 4.0 else "C [危険]"
+        summary = f"\n━━━━━━━━━━━━\n総合スコア: {score:.1f} / 10.0\n判定ランク: {rank}\n━━━━━━━━━━━━"
+        return "\n".join(report) + summary
+
+    except Exception as e:
+        return f"❌ 市場データ取得エラー: {str(e)}"
