@@ -19,7 +19,7 @@ SUMMARY_FOLDER_ID = get_env('SUMMARY_FOLDER_ID')
 
 REQUIRED_COLS = [
     '銘柄', '価格', 'パターン', '成長性判定', '売上成長(%)', 
-    '営業利益成長(EBITDA)%', '純利益成長(%)', '営業CF(M)', '時価総額(B)'
+    '純利益成長(%)', '時価総額(B)', '発射台スコア', '10EMA', '20SMA', '50SMA'
 ]
 
 def get_drive_service():
