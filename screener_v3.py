@@ -248,13 +248,22 @@ def run_screener():
                         mkt_cap = info.get('marketCap', 0)
                         if 0 < mkt_cap <= 100 * 1e9:
                             rev_g, eps_g = info.get('revenueGrowth'), info.get('earningsGrowth')
+                            op_cf = info.get('operatingCashflow')
+                            # HTMLレポートが使用する10EMAの算出
+                            ema10_val = c.ewm(span=10, adjust=False).mean().iloc[-1]
+                            
                             f_label = "【超優秀】クリア" if (rev_g or 0) >= 0.25 and (eps_g or 0) >= 0.25 else "【良好】一部" if (rev_g or 0) >= 0.25 or (eps_g or 0) >= 0.25 else "【不足】低成長"
                             
                             results.append({
                                 "銘柄": ticker, "価格": round(curr_p, 2), "パターン": ", ".join(tags),
                                 "成長性判定": f_label, "売上成長(%)": round(rev_g*100, 1) if rev_g else "不明",
+                                "営業利益成長(EBITDA)%": "不明",
                                 "純利益成長(%)": round(eps_g*100, 1) if eps_g else "不明",
-                                "時価総額(B)": round(mkt_cap/1e9, 2), "発射台スコア": lp_score
+                                "営業CF(M)": round(op_cf/1e6, 2) if op_cf else "不明",
+                                "時価総額(B)": round(mkt_cap/1e9, 2), "発射台スコア": lp_score,
+                                "10EMA": round(ema10_val, 2),
+                                "20SMA": round(sma20.iloc[-1], 2),
+                                "50SMA": round(sma50.iloc[-1], 2)
                             })
                             log(f"      > 【的中】: {ticker} (Score: {lp_score})")
                 except: continue
