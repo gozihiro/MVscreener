@@ -53,48 +53,92 @@ def handle_message(event):
             )
         )
 
-# --- 1. 銘柄別RVOLレポートロジック (既存) ---
+# --- 1. 銘柄別RVOLレポートロジック (統合解析版) ---
 def calculate_ticker_rvol_report(ticker):
     try:
-        hist = yf.download(ticker, period="25d", interval="5m", progress=False, auto_adjust=True)
-        if hist.empty:
+        # MVP/危険信号判定のため、期間を2y(日足)と25d(5分足)で取得
+        hist_5m = yf.download(ticker, period="25d", interval="5m", progress=False, auto_adjust=True)
+        hist_1d = yf.download(ticker, period="2y", interval="1d", progress=False, auto_adjust=True)
+
+        if hist_5m.empty or hist_1d.empty:
             return f"⚠️ ${ticker}: 銘柄が見つかりません。"
 
-        if isinstance(hist.columns, pd.MultiIndex):
-            hist.columns = hist.columns.get_level_values(0)
+        if isinstance(hist_5m.columns, pd.MultiIndex):
+            hist_5m.columns = hist_5m.columns.get_level_values(0)
+        if isinstance(hist_1d.columns, pd.MultiIndex):
+            hist_1d.columns = hist_1d.columns.get_level_values(0)
 
-        latest_dt = hist.index[-1]
+        # A. RVOL算出ロジック (既存継承)
+        latest_dt = hist_5m.index[-1]
         today_date = latest_dt.date()
         current_time = latest_dt.time()
         
-        today_data = hist[hist.index.date == today_date]
-        actual_vol = today_data['Volume'].sum()
+        today_data_5m = hist_5m[hist_5m.index.date == today_date]
+        actual_vol = today_data_5m['Volume'].sum()
         
-        past_data = hist[hist.index.date < today_date]
-        unique_dates = pd.Series(past_data.index.date).unique()[-20:]
+        past_data_5m = hist_5m[hist_5m.index.date < today_date]
+        unique_dates = pd.Series(past_data_5m.index.date).unique()[-20:]
         
         past_vols = []
         for d in unique_dates:
-            day_slice = past_data[past_data.index.date == d]
-            vol_until_now = day_slice.between_time("09:30", current_time)['Volume'].sum()
-            if vol_until_now > 0:
-                past_vols.append(vol_until_now)
+            day_slice = past_data_5m[past_data_5m.index.date == d]
+            v = day_slice.between_time("09:30", current_time)['Volume'].sum()
+            if v > 0: past_vols.append(v)
 
-        if not past_vols:
-            return f"⚠️ ${ticker}: 比較用データが不足しています。"
-
-        expected_vol = sum(past_vols) / len(past_vols)
+        expected_vol = sum(past_vols) / len(past_vols) if past_vols else 0
         rvol = actual_vol / expected_vol if expected_vol > 0 else 0
         
-        emoji = "🔥" if rvol >= 1.5 else "✅" if rvol >= 1.0 else "💤"
-        price = float(hist['Close'].iloc[-1])
-        change = (price / float(today_data['Open'].iloc[0]) - 1) * 100
+        # B. MVP指標判定 (直近15日)
+        recent_15 = hist_1d.tail(15)
+        prev_15 = hist_1d.shift(15).tail(15)
+        m_count = (recent_15['Close'] > recent_15['Close'].shift(1)).sum()
+        avg_v_recent = recent_15['Volume'].mean()
+        avg_v_prev = prev_15['Volume'].mean()
+        p_change = (recent_15['Close'].iloc[-1] / recent_15['Close'].iloc[0]) - 1
 
-        return (f"【高精度RVOL解析】\n"
-                f"銘柄: ${ticker}\n"
-                f"価格: ${price:.2f} ({change:+.2f}% vs Open)\n"
-                f"RVOL: {rvol:.2f}x {emoji}\n\n"
-                f"※過去20日間の同時刻平均({current_time.strftime('%H:%M')}時点)と比較")
+        mvp_all = (m_count >= 12) and (avg_v_recent / avg_v_prev >= 1.25) and (p_change >= 0.20)
+
+        # C. テクニカル・危険信号判定
+        c = hist_1d['Close']
+        price_now = c.iloc[-1]
+        ema10 = c.ewm(span=10, adjust=False).mean().iloc[-1]
+        sma20 = c.rolling(window=20).mean().iloc[-1]
+        sma200 = c.rolling(window=200).mean().iloc[-1]
+        
+        # エルダー流インパルス判定用
+        ema13 = c.ewm(span=13, adjust=False).mean()
+        macd = c.ewm(span=12, adjust=False).mean() - c.ewm(span=26, adjust=False).mean()
+        is_red = (ema13.iloc[-1] < ema13.iloc[-2] and macd.iloc[-1] < macd.iloc[-2])
+        extension = (price_now / sma200 - 1) * 100 if sma200 > 0 else 0
+        
+        dangers = []
+        if price_now < ema10: dangers.append("短期10EMA割れ")
+        if price_now < sma20: dangers.append("20SMA割れ(Stage脱落警戒)")
+        if is_red: dangers.append("インパルス・赤(弱気転換)")
+        if extension >= 50: dangers.append("200MA乖離過大(過熱)")
+
+        # D. メッセージ構築
+        mvp_status = ""
+        if mvp_all:
+            if extension >= 50:
+                mvp_status = "🚨【MVP売り】クライマックス・トップ。利確を検討。"
+            else:
+                mvp_status = "🚀【MVP点火】強力な勢い。トレンド継続を期待。"
+        elif dangers:
+            mvp_status = "⚠️【危険信号】\n・" + "\n・".join(dangers)
+        else:
+            mvp_status = "✅【現状維持】特筆すべき過熱や崩れなし。"
+
+        emoji = "🔥" if rvol >= 1.5 else "✅" if rvol >= 1.0 else "💤"
+        change = (price_now / float(today_data_5m['Open'].iloc[0]) - 1) * 100
+
+        return (f"【高精度RVOL・MVP解析: ${ticker}】\n"
+                f"価格: ${price_now:.2f} ({change:+.2f}% vs Open)\n"
+                f"RVOL: {rvol:.2f}x {emoji}\n"
+                f"200MA乖離: {extension:.1f}%\n"
+                f"----------\n"
+                f"{mvp_status}\n\n"
+                f"※過去20日同時刻平均比較")
     except Exception as e:
         return f"❌ エラー: {str(e)}"
 
