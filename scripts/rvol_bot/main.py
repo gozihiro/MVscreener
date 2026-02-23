@@ -90,13 +90,24 @@ def calculate_ticker_rvol_report(ticker):
         
         # B. MVP指標判定 (直近15日)
         recent_15 = hist_1d.tail(15)
-        prev_15 = hist_1d.shift(15).tail(15)
+        prev_15 = hist_1d.iloc[-30:-15] # 比較用の直前15日間
+        
         m_count = (recent_15['Close'] > recent_15['Close'].shift(1)).sum()
-        avg_v_recent = recent_15['Volume'].mean()
-        avg_v_prev = prev_15['Volume'].mean()
+        v_ratio = recent_15['Volume'].mean() / prev_15['Volume'].mean() if not prev_15['Volume'].mean() == 0 else 0
         p_change = (recent_15['Close'].iloc[-1] / recent_15['Close'].iloc[0]) - 1
 
-        mvp_all = (m_count >= 12) and (avg_v_recent / avg_v_prev >= 1.25) and (p_change >= 0.20)
+        # 各項目の合否判定
+        m_ok = m_count >= 12
+        v_ok = v_ratio >= 1.25
+        p_ok = p_change >= 0.20
+        mvp_all = m_ok and v_ok and p_ok
+
+        # メッセージ表示用の詳細文字列
+        mvp_details = (
+            f"M: {'○' if m_ok else '×'} ({m_count}/15日上昇)\n"
+            f"V: {'○' if v_ok else '×'} ({v_ratio:.2f}x 出来高)\n"
+            f"P: {'○' if p_ok else '×'} ({p_change*100:+.1f}% 上昇)"
+        )
 
         # C. テクニカル・危険信号判定
         c = hist_1d['Close']
@@ -105,7 +116,6 @@ def calculate_ticker_rvol_report(ticker):
         sma20 = c.rolling(window=20).mean().iloc[-1]
         sma200 = c.rolling(window=200).mean().iloc[-1]
         
-        # エルダー流インパルス判定用
         ema13 = c.ewm(span=13, adjust=False).mean()
         macd = c.ewm(span=12, adjust=False).mean() - c.ewm(span=26, adjust=False).mean()
         is_red = (ema13.iloc[-1] < ema13.iloc[-2] and macd.iloc[-1] < macd.iloc[-2])
@@ -118,12 +128,11 @@ def calculate_ticker_rvol_report(ticker):
         if extension >= 50: dangers.append("200MA乖離過大(過熱)")
 
         # D. メッセージ構築
-        mvp_status = ""
         if mvp_all:
             if extension >= 50:
-                mvp_status = "🚨【MVP売り】クライマックス・トップ。利確を検討。"
+                mvp_status = "🚨【MVP売り】クライマックス・トップ。"
             else:
-                mvp_status = "🚀【MVP点火】強力な勢い。トレンド継続を期待。"
+                mvp_status = "🚀【MVP点火】強力なブレイクアウト初動。"
         elif dangers:
             mvp_status = "⚠️【危険信号】\n・" + "\n・".join(dangers)
         else:
@@ -136,6 +145,8 @@ def calculate_ticker_rvol_report(ticker):
                 f"価格: ${price_now:.2f} ({change:+.2f}% vs Open)\n"
                 f"RVOL: {rvol:.2f}x {emoji}\n"
                 f"200MA乖離: {extension:.1f}%\n"
+                f"----------\n"
+                f"MVP詳細判定:\n{mvp_details}\n"
                 f"----------\n"
                 f"{mvp_status}\n\n"
                 f"※過去20日同時刻平均比較")
