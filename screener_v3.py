@@ -80,7 +80,7 @@ def calculate_launchpad_score(df, ticker, tags, index_change):
 
     # --- B. パターン別ボーナス (最大4点) ---
     bonus_vcp = 0
-    if "VCP_Original" in tags:
+    if "VCP_3Steps_Validated" in tags:
         # VDU (Volume Dry-up)
         vol_sma50 = df['Volume'].rolling(50).mean().iloc[-1]
         if v_today < (vol_sma50 * 0.5): bonus_vcp += 2
@@ -192,28 +192,51 @@ def run_screener():
                 try:
                     if ticker not in data['Close'].columns: continue
                     df = data.xs(ticker, axis=1, level=1).dropna()
-                    if len(df) < 200: continue
+                    if len(df) < 252: continue
                     
                     # A/Dカウンター
                     if df['Close'].iloc[-1] > df['Close'].iloc[-2]: advances += 1
                     else: declines += 1
 
                     c, h, l, v = df['Close'], df['High'], df['Low'], df['Volume']
-                    sma20, sma50, sma200 = c.rolling(20).mean(), c.rolling(50).mean(), c.rolling(200).mean()
+                    curr_p = c.iloc[-1]
+                    
+                    # 指標算出
+                    sma20 = c.rolling(20).mean()
+                    sma50 = c.rolling(50).mean()
+                    sma150 = c.rolling(150).mean()
+                    sma200 = c.rolling(200).mean()
                     vol_sma50 = v.rolling(50).mean()
+                    high_52w = h.rolling(252).max().iloc[-1]
+                    low_52w = l.rolling(252).min().iloc[-1]
 
                     tags = []
-                    # 1. VCP
-                    if (c.iloc[-1] > sma20.iloc[-1] > sma50.iloc[-1] > sma200.iloc[-1]) and \
-                       (sma200.iloc[-20:].diff().dropna() > 0).all() and \
-                       (c.rolling(20).std()*4/sma20).iloc[-1] == (c.rolling(20).std()*4/sma20).iloc[-20:].min():
-                        tags.append("VCP_Original")
+                    
+                    # --- 1. ミネルヴィニ・トレンドテンプレート (厳密8条件) ---
+                    template_ok = (
+                        curr_p > sma50.iloc[-1] > sma150.iloc[-1] > sma200.iloc[-1] and
+                        (sma200.iloc[-20:].diff().dropna() > 0).all() and
+                        curr_p >= low_52w * 1.30 and
+                        curr_p >= high_52w * 0.75
+                    )
 
-                    # 2. PowerPlay & High-Base
-                    if (c.iloc[-1] > sma20.iloc[-1] > sma50.iloc[-1]):
-                        if (c.iloc[-1]/c.iloc[-40] >= 1.70) and (c.iloc[-1]/h.iloc[-40:].max() >= 0.75):
+                    if template_ok:
+                        # --- 2. 3段階VCP収縮判定 (マルチタイムスパン: 60, 90, 120日) ---
+                        def check_vcp_3steps(lookback):
+                            step = lookback // 3
+                            # T1, T2, T3 の振幅を計測
+                            d1 = (h.iloc[-lookback:-lookback+step].max() - l.iloc[-lookback:-lookback+step].min()) / h.iloc[-lookback:-lookback+step].max()
+                            d2 = (h.iloc[-lookback+step:-step].max() - l.iloc[-lookback+step:-step].min()) / h.iloc[-lookback+step:-step].max()
+                            d3 = (h.iloc[-step:].max() - l.iloc[-step:].min()) / h.iloc[-step:].max()
+                            return (d1 > d2 > d3) and (d3 < 0.10)
+
+                        if any([check_vcp_3steps(lb) for lb in [60, 90, 120]]):
+                            tags.append("VCP_3Steps_Validated")
+
+                        # --- 3. PowerPlay & High-Base ---
+                        if (curr_p/c.iloc[-40] >= 1.70) and (curr_p/h.iloc[-40:].max() >= 0.75):
                             tags.append("PowerPlay(70%+)")
-                        if (1.10 <= c.iloc[-1]/c.iloc[-10] <= 1.70) and (c.iloc[-1]/h.iloc[-10:].max() >= 0.90):
+                        if (1.10 <= curr_p/c.iloc[-10] <= 1.70) and (curr_p/h.iloc[-10:].max() >= 0.90):
                             tags.append("High-Base(Strict)" if (c.iloc[-5:].pct_change() >= 0.10).any() and (v.iloc[-3:] < vol_sma50.iloc[-3:]).all() else "High-Base")
 
                     if tags:
@@ -228,7 +251,7 @@ def run_screener():
                             f_label = "【超優秀】クリア" if (rev_g or 0) >= 0.25 and (eps_g or 0) >= 0.25 else "【良好】一部" if (rev_g or 0) >= 0.25 or (eps_g or 0) >= 0.25 else "【不足】低成長"
                             
                             results.append({
-                                "銘柄": ticker, "価格": round(c.iloc[-1], 2), "パターン": ", ".join(tags),
+                                "銘柄": ticker, "価格": round(curr_p, 2), "パターン": ", ".join(tags),
                                 "成長性判定": f_label, "売上成長(%)": round(rev_g*100, 1) if rev_g else "不明",
                                 "純利益成長(%)": round(eps_g*100, 1) if eps_g else "不明",
                                 "時価総額(B)": round(mkt_cap/1e9, 2), "発射台スコア": lp_score
