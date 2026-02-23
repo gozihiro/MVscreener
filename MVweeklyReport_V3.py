@@ -91,7 +91,7 @@ def get_accumulation_ranking(service):
     return states
 
 def create_intelligence_report(df, acc_data=[]):
-    """HTMLレポート生成（散布図の配色・レイヤーを抜本修正）"""
+    """HTMLレポート生成（新VCP判定名に対応）"""
     # 1. 日付列の特定 (MM/DD 形式)
     date_cols = sorted([c for c in df.columns if '価格_' in c])
     dates = [c.split('_')[-1] for c in date_cols]
@@ -388,7 +388,7 @@ def create_intelligence_report(df, acc_data=[]):
                         data: readyBase.filter(x => x.pattern.includes('Strict')).sort(getSorter(['latestLaunchpad','persistence','vol','growth'], [-1,-1,1,-1])).slice(0,5) }},
                     {{ title: "🚀 Ready to Launch - High-Base", hint: "優先順位: 最新発射台 ➔ 定着 ➔ 低ボラ ➔ 成長", 
                         data: readyBase.filter(x => x.pattern.includes('High-Base') && !x.pattern.includes('Strict')).sort(getSorter(['latestLaunchpad','persistence','vol','growth'], [-1,-1,1,-1])).slice(0,5) }},
-                    {{ title: "🚀 Ready to Launch - VCP_Original", hint: "優先順位: 最新発射台 ➔ 定着 ➔ 低ボラ ➔ 成長", 
+                    {{ title: "🚀 Ready to Launch - VCP (Strict/3-Steps)", hint: "優先順位: 最新発射台 ➔ 定着 ➔ 低ボラ ➔ 成長", 
                         data: readyBase.filter(x => x.pattern.includes('VCP')).sort(getSorter(['latestLaunchpad','persistence','vol','growth'], [-1,-1,1,-1])).slice(0,5) }},
                     {{ title: "🚀 Ready to Launch - PowerPlay(70%+)", hint: "優先順位: 最新発射台 ➔ 定着 ➔ 低ボラ ➔ 成長", 
                         data: readyBase.filter(x => x.pattern.includes('PowerPlay')).sort(getSorter(['latestLaunchpad','persistence','vol','growth'], [-1,-1,1,-1])).slice(0,5) }},
