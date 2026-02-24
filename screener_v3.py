@@ -80,7 +80,7 @@ def calculate_launchpad_score(df, ticker, tags, index_change):
 
     # --- B. パターン別ボーナス (最大4点) ---
     bonus_vcp = 0
-    if "VCP_3Steps_Validated" in tags:
+    if "VCP_3Steps_Validated" in tags or "VCP_Original" in tags:
         # VDU (Volume Dry-up)
         vol_sma50 = df['Volume'].rolling(50).mean().iloc[-1]
         if v_today < (vol_sma50 * 0.5): bonus_vcp += 2
@@ -220,26 +220,40 @@ def run_screener():
                         curr_p >= high_52w * 0.75
                     )
 
-                    if template_ok:
-                        # --- 2. 3段階VCP収縮判定 (マルチタイムスパン: 60, 90, 120日) ---
-                        def check_vcp_3steps(lookback):
-                            step = lookback // 3
-                            # T1, T2, T3 の振幅を計測
-                            d1 = (h.iloc[-lookback:-lookback+step].max() - l.iloc[-lookback:-lookback+step].min()) / h.iloc[-lookback:-lookback+step].max()
-                            d2 = (h.iloc[-lookback+step:-step].max() - l.iloc[-lookback+step:-step].min()) / h.iloc[-lookback+step:-step].max()
-                            d3 = (h.iloc[-step:].max() - l.iloc[-step:].min()) / h.iloc[-step:].max()
-                            return (d1 > d2 > d3) and (d3 < 0.10)
+                    # --- 2. 3段階VCP収縮判定 (マルチタイムスパン: 60, 90, 120日) ---
+                    def check_vcp_strict(lookback):
+                        step = lookback // 3
+                        # T1, T2, T3 の振幅を計測
+                        d1 = (h.iloc[-lookback:-lookback+step].max() - l.iloc[-lookback:-lookback+step].min()) / h.iloc[-lookback:-lookback+step].max()
+                        d2 = (h.iloc[-lookback+step:-step].max() - l.iloc[-lookback+step:-step].min()) / h.iloc[-lookback+step:-step].max()
+                        d3 = (h.iloc[-step:].max() - l.iloc[-step:].min()) / h.iloc[-step:].max()
+                        # 緩和ロジック: 初期/中期より現在が収縮していればOK (d1>d3 かつ d2>d3)
+                        return (d1 > d3) and (d2 > d3) and (d3 < 0.10)
 
-                        if any([check_vcp_3steps(lb) for lb in [60, 90, 120]]):
-                            tags.append("VCP_3Steps_Validated")
+                    vcp_strict_ok = any([check_vcp_strict(lb) for lb in [60, 90, 120]])
 
-                        # --- 3. PowerPlay & High-Base ---
+                    # --- 3. 既存ロジック判定 (母集団確保用) ---
+                    # A. VCP_Original (ボラティリティ極小化)
+                    if (curr_p > sma20.iloc[-1] > sma50.iloc[-1] > sma200.iloc[-1]) and \
+                       (sma200.iloc[-20:].diff().dropna() > 0).all() and \
+                       (c.rolling(20).std()*4/sma20).iloc[-1] == (c.rolling(20).std()*4/sma20).iloc[-20:].min():
+                        tags.append("VCP_Original")
+
+                    # B. PowerPlay & High-Base
+                    if (curr_p > sma20.iloc[-1] > sma50.iloc[-1]):
                         if (curr_p/c.iloc[-40] >= 1.70) and (curr_p/h.iloc[-40:].max() >= 0.75):
                             tags.append("PowerPlay(70%+)")
                         if (1.10 <= curr_p/c.iloc[-10] <= 1.70) and (curr_p/h.iloc[-10:].max() >= 0.90):
-                            tags.append("High-Base(Strict)" if (c.iloc[-5:].pct_change() >= 0.10).any() and (v.iloc[-3:] < vol_sma50.iloc[-3:]).all() else "High-Base")
+                            if (c.iloc[-5:].pct_change() >= 0.10).any() and (v.iloc[-3:] < vol_sma50.iloc[-3:]).all():
+                                tags.append("High-Base(Strict)")
+                            else:
+                                tags.append("High-Base")
 
+                    # --- 4. 品質タグの追加 (既存タグがある場合のみ付与) ---
                     if tags:
+                        if template_ok: tags.append("[Trend_OK]")
+                        if vcp_strict_ok: tags.append("VCP_3Steps_Validated")
+
                         # 発射台スコアの算出
                         lp_score = calculate_launchpad_score(df, ticker, tags, index_change)
                         
