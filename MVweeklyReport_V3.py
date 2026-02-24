@@ -91,7 +91,7 @@ def get_accumulation_ranking(service):
     return states
 
 def create_intelligence_report(df, acc_data=[]):
-    """HTMLレポート生成（新VCP判定名に対応）"""
+    """HTMLレポート生成（並列判定タグ完全対応版）"""
     # 1. 日付列の特定 (MM/DD 形式)
     date_cols = sorted([c for c in df.columns if '価格_' in c])
     dates = [c.split('_')[-1] for c in date_cols]
@@ -178,6 +178,12 @@ def create_intelligence_report(df, acc_data=[]):
             .rank-card:hover {{ transform: translateY(-5px); box-shadow: 0 8px 16px rgba(0,0,0,0.1); }}
             .rank-badge {{ position: absolute; top: -12px; left: -12px; background: #1a2a3a; color: white; width: 35px; height: 35px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; border: 3px solid #fff; }}
             .persistence-tag {{ float: right; background: #e74c3c; color: white; padding: 4px 10px; border-radius: 6px; font-size: 0.8em; font-weight: bold; }}
+            
+            /* 品質バッジの定義 */
+            .q-badge {{ display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 0.75em; font-weight: bold; margin-top: 8px; margin-right: 4px; }}
+            .q-trend {{ background: #e8f5e9; color: #2e7d32; border: 1px solid #c8e6c9; }}
+            .q-strict {{ background: #fff3e0; color: #ef6c00; border: 1px solid #ffe0b2; }}
+
             .metric-box {{ background: #f1f3f5; padding: 12px; border-radius: 10px; margin: 15px 0; font-size: 0.9em; }}
             .metric-row {{ display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #dee2e6; }}
             .metric-row:last-child {{ border-bottom: none; }}
@@ -186,8 +192,6 @@ def create_intelligence_report(df, acc_data=[]):
             .explanation-box {{ background: #eef7fd; border-left: 5px solid #3498db; padding: 15px; margin-top: 15px; font-size: 0.9em; line-height: 1.6; }}
             .score-highlight {{ color: #f39c12; font-weight: bold; }}
             .tier-header {{ background: #2c3e50; color: white; padding: 10px 20px; border-radius: 10px; margin-bottom: 15px; display: inline-block; }}
-            
-            /* コンパクトな表形式のスタイル */
             .acc-table {{ width: 100%; border-collapse: collapse; font-size: 0.85em; margin-bottom: 10px; background: white; }}
             .acc-table th, .acc-table td {{ border-bottom: 1px solid #eee; padding: 8px 10px; text-align: left; }}
             .acc-table th {{ color: #7f8c8d; font-weight: normal; background: #fafafa; border-top: 1px solid #eee; }}
@@ -264,7 +268,7 @@ def create_intelligence_report(df, acc_data=[]):
                     <div>売り抜け日<br><span>${{mEnd.dist}}日</span></div>
                 `;
 
-                // Accumulation Ranking Rendering (Table Style)
+                // Accumulation Ranking Rendering
                 let accHtml = '<div class="card"><h2 style="margin-top:0;">💎 Accumulation Survival Ranking</h2>';
                 const accTiers = [
                     {{ label: "🔥 熟成 (10日以上)", filter: d => d.persistence >= 10 }},
@@ -276,36 +280,10 @@ def create_intelligence_report(df, acc_data=[]):
                     const tierData = data.accumulation.filter(tier.filter).sort((a,b) => b.score - a.score);
                     if(tierData.length > 0) {{
                         accHtml += `<div class="tier-header">${{tier.label}}</div>`;
-                        accHtml += `
-                            <table class="acc-table">
-                                <thead>
-                                    <tr>
-                                        <th>#</th>
-                                        <th>銘柄</th>
-                                        <th>出現</th>
-                                        <th>総合Score</th>
-                                        <th>続伸率</th>
-                                        <th>新高値比</th>
-                                        <th>VCP</th>
-                                        <th>Impulse</th>
-                                    </tr>
-                                </thead>
-                                <tbody>`;
-                        
+                        accHtml += `<table class="acc-table"><thead><tr><th>#</th><th>銘柄</th><th>出現</th><th>総合Score</th><th>続伸率</th><th>新高値比</th><th>VCP</th><th>Impulse</th></tr></thead><tbody>`;
                         tierData.forEach((s, idx) => {{
-                            accHtml += `
-                                <tr>
-                                    <td>${{idx+1}}</td>
-                                    <td class="ticker-name">${{s.ticker}}</td>
-                                    <td>${{s.persistence}}日</td>
-                                    <td class="score-val">${{s.score}}</td>
-                                    <td>${{s.consistency}}%</td>
-                                    <td>${{s.proximity}}%</td>
-                                    <td>${{s.tightness}}</td>
-                                    <td style="color:${{s.impulse === 'Blue' ? '#3498db' : '#95a5a6'}}">${{s.impulse}}</td>
-                                </tr>`;
+                            accHtml += `<tr><td>${{idx+1}}</td><td class="ticker-name">${{s.ticker}}</td><td>${{s.persistence}}日</td><td class="score-val">${{s.score}}</td><td>${{s.consistency}}%</td><td>${{s.proximity}}%</td><td>${{s.tightness}}</td><td style="color:${{s.impulse === 'Blue' ? '#3498db' : '#95a5a6'}}">${{s.impulse}}</td></tr>`;
                         }});
-                        
                         accHtml += '</tbody></table><div style="margin-bottom:20px;"></div>';
                     }}
                 }});
@@ -319,15 +297,13 @@ def create_intelligence_report(df, acc_data=[]):
                     const persistence = pricesInPeriod.length;
                     const change = pricesInPeriod.length >= 2 ? ((pricesInPeriod[pricesInPeriod.length - 1] / pricesInPeriod[0]) - 1) * 100 : 0;
                     const vol = pricesInPeriod.length >= 2 ? ((Math.max(...pricesInPeriod) - Math.min(...pricesInPeriod)) / Math.min(...pricesInPeriod)) * 100 : 0;
-                    
                     const latestLaunchpad = s.launchpads[latestDate] || 0;
 
-                    // --- Stealth Accumulation Logic (4/5 days, <3.5% daily) ---
+                    // --- [復活] Stealth Accumulation Logic (4/5 days up, <3.5% daily) ---
                     let stealthScore = 0;
                     if (pricesInPeriod.length >= 6) {{
                         const last6 = pricesInPeriod.slice(-6);
-                        let upCount = 0;
-                        let isTight = true;
+                        let upCount = 0, isTight = true;
                         for (let i = 1; i < 6; i++) {{
                             const dailyRet = (last6[i] / last6[i-1]) - 1;
                             if (dailyRet > 0) upCount++;
@@ -336,35 +312,33 @@ def create_intelligence_report(df, acc_data=[]):
                         if (upCount >= 4 && isTight) stealthScore = upCount;
                     }}
 
-                    // --- Momentum Stealth Logic (7/10 days up, <7.7% daily, 10EMA > 20SMA > 50SMA) ---
+                    // --- [復活] Momentum Stealth Logic (7/10 days up, <7.7% daily, 10EMA > 20SMA > 50SMA) ---
                     let momentumStealthScore = 0;
                     if (pricesInPeriod.length >= 11) {{
                         const last10 = pricesInPeriod.slice(-11);
-                        let upCount = 0;
-                        let isTight = true;
+                        let upCount = 0, isTight = true;
                         for (let i = 1; i < 11; i++) {{
                             const dailyRet = (last10[i] / last10[i-1]) - 1;
                             if (dailyRet > 0) upCount++;
                             if (Math.abs(dailyRet) > 0.077) isTight = false;
                         }}
-                        const dLat = latestDate;
-                        const m10 = s.ema10s[dLat], m20 = s.sma20s[dLat], m50 = s.sma50s[dLat];
+                        const m10 = s.ema10s[latestDate], m20 = s.sma20s[latestDate], m50 = s.sma50s[latestDate];
                         const isPerfectOrder = (m10 && m20 && m50) ? (m10 > m20 && m20 > m50) : true;
                         if (upCount >= 7 && isTight && isPerfectOrder) momentumStealthScore = upCount;
                     }}
 
+                    const latestPat = s.patterns[latestDate] || "";
+                    const isTrendOk = latestPat.includes('[Trend_OK]');
+                    const isStrictVcp = latestPat.includes('VCP_3Steps_Validated');
+
                     let growth = 0, pattern = "－", launchpad = 0;
-                    let anyStrict = false;
                     for(let i = periodLen - 1; i >= 0; i--) {{
                         const d = targetDates[i];
                         if (growth === 0 && s.growths[d]) growth = s.growths[d];
                         if (s.launchpads[d] > launchpad) launchpad = s.launchpads[d];
-                        if (s.patterns[d] && !["", "不明", "－"].includes(s.patterns[d])) {{
-                            if (pattern === "－") pattern = s.patterns[d];
-                            if (s.patterns[d].includes('Strict')) anyStrict = true;
-                        }}
+                        if (pattern === "－" && s.patterns[d] && s.patterns[d] !== "－") pattern = s.patterns[d];
                     }}
-                    return {{ ticker: s.ticker, persistence, change, vol, growth, pattern, anyStrict, launchpad, latestLaunchpad, stealthScore, momentumStealthScore }};
+                    return {{ ticker: s.ticker, persistence, change, vol, growth, pattern, launchpad, latestLaunchpad, stealthScore, momentumStealthScore, isTrendOk, isStrictVcp }};
                 }}).filter(x => x !== null);
 
                 const getSorter = (keys, orders) => (a, b) => {{
@@ -375,31 +349,25 @@ def create_intelligence_report(df, acc_data=[]):
                     return 0;
                 }};
 
-                const readyBase = analyzed.filter(x => x.latestLaunchpad > 0);
-
                 const sections = [
+                    {{ title: "🏆 Super Performance (全条件合格)", hint: "ミネルヴィニStage 2 ＋ 3段階VCP収縮合格", 
+                        data: analyzed.filter(x => x.isTrendOk && x.isStrictVcp).sort(getSorter(['latestLaunchpad','persistence'], [-1,-1])).slice(0,10) }},
                     {{ title: "🚀 Ready to Launch (即応銘柄) 総合 TOP 5", hint: "優先順位: 最新発射台 ➔ 定着 ➔ 成長 ➔ 騰落率", 
-                        data: [...readyBase].sort(getSorter(['latestLaunchpad','persistence','growth','change'], [-1,-1,-1,-1])).slice(0,5) }},
+                        data: analyzed.filter(x => x.latestLaunchpad > 0).sort(getSorter(['latestLaunchpad','persistence','growth','change'], [-1,-1,-1,-1])).slice(0,5) }},
                     {{ title: "🕵️ Stealth Accumulation (隠密買い集め)", hint: "優先順位: 隠密スコア ➔ 定着 ➔ 低ボラ ➔ 成長", 
                         data: analyzed.filter(x => x.stealthScore > 0).sort(getSorter(['stealthScore','persistence','vol','growth'], [-1,-1,1,-1])).slice(0,5) }},
                     {{ title: "🕵️ Momentum Stealth (短期加速)", hint: "優先順位: 隠密スコア ➔ 定着 ➔ 低ボラ ➔ 成長", 
                         data: analyzed.filter(x => x.momentumStealthScore > 0).sort(getSorter(['momentumStealthScore','persistence','vol','growth'], [-1,-1,1,-1])).slice(0,5) }},
                     {{ title: "🚀 Ready to Launch - High-Base (Strict)", hint: "優先順位: 最新発射台 ➔ 定着 ➔ 低ボラ ➔ 成長", 
-                        data: readyBase.filter(x => x.pattern.includes('Strict')).sort(getSorter(['latestLaunchpad','persistence','vol','growth'], [-1,-1,1,-1])).slice(0,5) }},
+                        data: analyzed.filter(x => x.latestLaunchpad > 0 && x.pattern.includes('Strict')).sort(getSorter(['latestLaunchpad','persistence','vol','growth'], [-1,-1,1,-1])).slice(0,5) }},
                     {{ title: "🚀 Ready to Launch - High-Base", hint: "優先順位: 最新発射台 ➔ 定着 ➔ 低ボラ ➔ 成長", 
-                        data: readyBase.filter(x => x.pattern.includes('High-Base') && !x.pattern.includes('Strict')).sort(getSorter(['latestLaunchpad','persistence','vol','growth'], [-1,-1,1,-1])).slice(0,5) }},
-                    {{ title: "🚀 Ready to Launch - VCP (Strict/3-Steps)", hint: "優先順位: 最新発射台 ➔ 定着 ➔ 低ボラ ➔ 成長", 
-                        data: readyBase.filter(x => x.pattern.includes('VCP')).sort(getSorter(['latestLaunchpad','persistence','vol','growth'], [-1,-1,1,-1])).slice(0,5) }},
+                        data: analyzed.filter(x => x.latestLaunchpad > 0 && x.pattern.includes('High-Base') && !x.pattern.includes('Strict')).sort(getSorter(['latestLaunchpad','persistence','vol','growth'], [-1,-1,1,-1])).slice(0,5) }},
+                    {{ title: "🚀 Ready to Launch - VCP", hint: "優先順位: 最新発射台 ➔ 定着 ➔ 低ボラ ➔ 成長", 
+                        data: analyzed.filter(x => x.latestLaunchpad > 0 && x.pattern.includes('VCP')).sort(getSorter(['latestLaunchpad','persistence','vol','growth'], [-1,-1,1,-1])).slice(0,5) }},
                     {{ title: "🚀 Ready to Launch - PowerPlay(70%+)", hint: "優先順位: 最新発射台 ➔ 定着 ➔ 低ボラ ➔ 成長", 
-                        data: readyBase.filter(x => x.pattern.includes('PowerPlay')).sort(getSorter(['latestLaunchpad','persistence','vol','growth'], [-1,-1,1,-1])).slice(0,5) }},
+                        data: analyzed.filter(x => x.latestLaunchpad > 0 && x.pattern.includes('PowerPlay')).sort(getSorter(['latestLaunchpad','persistence','vol','growth'], [-1,-1,1,-1])).slice(0,5) }},
                     {{ title: "🏆 総合・サバイバルリーダー", hint: "優先順位: 定着 ➔ 騰落率 ➔ 成長 ➔ 低ボラ", 
-                        data: [...analyzed].sort(getSorter(['persistence','change','growth','vol'], [-1,-1,-1,1])).slice(0,5) }},
-                    {{ title: "📐 High-Base (Strict) リーダー", hint: "優先順位: 定着 ➔ 発射台 ➔ 低ボラ ➔ 騰落率 ➔ 成長", 
-                        data: analyzed.filter(x => x.anyStrict).sort(getSorter(['persistence','launchpad','vol','change','growth'], [-1,-1,1,-1,-1])).slice(0,5) }},
-                    {{ title: "🌀 VCP・収束リーダー", hint: "優先順位: 定着 ➔ 低ボラ ➔ 成長 ➔ 騰落率", 
-                        data: analyzed.filter(x => x.pattern.includes('VCP')).sort(getSorter(['persistence','vol','growth','change'], [-1,1,-1,-1])).slice(0,5) }},
-                    {{ title: "⚡ PowerPlay・勢いリーダー", hint: "優先順位: 定着 ➔ 騰落率 ➔ 成長 ➔ 低ボラ", 
-                        data: analyzed.filter(x => x.pattern.includes('PowerPlay')).sort(getSorter(['persistence','change','growth','vol'], [-1,-1,-1,1])).slice(0,5) }}
+                        data: [...analyzed].sort(getSorter(['persistence','change','growth','vol'], [-1,-1,-1,1])).slice(0,5) }}
                 ];
 
                 let html = "";
@@ -407,13 +375,15 @@ def create_intelligence_report(df, acc_data=[]):
                     html += `<div class="card"><h2 class="section-title">${{sec.title}}</h2><p class="priority-hint">${{sec.hint}}</p><div class="rank-grid">`;
                     if (sec.data.length === 0) html += "<p>対象なし</p>";
                     sec.data.forEach((s, idx) => {{
+                        const badges = (s.isTrendOk ? '<span class="q-badge q-trend">Trend_OK</span>' : '') + (s.isStrictVcp ? '<span class="q-badge q-strict">VCP_Strict</span>' : '');
                         html += `
                         <div class="rank-card">
                             <div class="rank-badge">${{idx+1}}</div>
                             <span class="persistence-tag">${{s.persistence}}日出現</span>
                             <h3 style="margin:5px 0;">${{s.ticker}}</h3>
+                            <div class="quality-badges">${{badges}}</div>
                             <div class="metric-box">
-                                <div class="metric-row"><span>${{sec.title.includes('Stealth') ? '隠密Score' : '発射台Score'}}</span> <b class="score-highlight">${{s.momentumStealthScore || s.stealthScore || s.latestLaunchpad || s.launchpad}}</b></div>
+                                <div class="metric-row"><span>${{sec.title.includes('Stealth') ? '隠密Score' : '発射台Score'}}</span> <b class="score-highlight">${{s.momentumStealthScore || s.stealthScore || s.latestLaunchpad}}</b></div>
                                 <div class="metric-row"><span>期間騰落</span> <b style="color:${{s.change >=0 ? '#e74c3c':'#2980b9'}}">${{s.change.toFixed(1)}}%</b></div>
                                 <div class="metric-row"><span>売上成長</span> <b>${{s.growth}}%</b></div>
                             </div>
@@ -434,15 +404,7 @@ def create_intelligence_report(df, acc_data=[]):
                 Plotly.newPlot('chart-scatter', [{{
                     x: scatterData.map(x => x.persistence), y: scatterData.map(x => x.change), text: scatterData.map(x => x.ticker),
                     mode: 'markers+text', textposition: 'top center',
-                    marker: {{ 
-                        size: 14, 
-                        color: scatterData.map(x => x.launchpad), 
-                        colorscale: [[0, 'rgb(255, 255, 204)'], [1, 'rgb(189, 0, 38)']], 
-                        reversescale: false,
-                        cmin: 0, cmax: 10,
-                        showscale: true, 
-                        colorbar: {{title: 'Score', titleside: 'right'}} 
-                    }}
+                    marker: {{ size: 14, color: scatterData.map(x => x.launchpad), colorscale: [[0, 'rgb(255, 255, 204)'], [1, 'rgb(189, 0, 38)']], reversescale: false, cmin: 0, cmax: 10, showscale: true, colorbar: {{title: 'Score', titleside: 'right'}} }}
                 }}], {{ xaxis: {{title: '出現日数'}}, yaxis: {{title: '期間騰落率(%)'}}, margin: {{t:20, b:40, l:50, r:50}}, template: 'plotly_white' }});
             }}
             handleDateChange();
@@ -482,10 +444,7 @@ if __name__ == "__main__":
     while not done: _, done = downloader.next_chunk()
     fh.seek(0)
     trend_df = pd.read_csv(fh, dtype=str)
-    
-    # Accumulation Ranking Dataの取得
     accumulation_data = get_accumulation_ranking(service)
-    
     html_report = create_intelligence_report(trend_df, accumulation_data)
     report_filename = csv_name.replace('weekly_detailed_trend', 'interactive_ranking').replace('.csv', '.html')
     upload_to_drive(html_report, report_filename)
