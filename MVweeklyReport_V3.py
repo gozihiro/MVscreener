@@ -91,7 +91,7 @@ def get_accumulation_ranking(service):
     return states
 
 def create_intelligence_report(df, acc_data=[]):
-    """HTMLレポート生成（並列判定タグ完全対応版）"""
+    """HTMLレポート生成（品質検証とTOP5の完全併記版）"""
     # 1. 日付列の特定 (MM/DD 形式)
     date_cols = sorted([c for c in df.columns if '価格_' in c])
     dates = [c.split('_')[-1] for c in date_cols]
@@ -174,13 +174,14 @@ def create_intelligence_report(df, acc_data=[]):
             .market-grid {{ display: grid; grid-template-columns: repeat(3, 1fr); text-align: center; font-size: 1.2em; font-weight: bold; background: #f8f9fa; padding: 20px; border-radius: 12px; }}
             .section-title {{ font-size: 1.8em; margin: 40px 0 20px 0; border-left: 10px solid #3498db; padding-left: 20px; color: #1a2a3a; }}
             .rank-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 20px; }}
-            .rank-card {{ background: #fff; border: 1px solid #e0e0e0; border-radius: 15px; padding: 20px; position: relative; transition: 0.3s; }}
+            .rank-card {{ background: #fff; border: 1px solid #e0e0e0; border-radius: 15px; padding: 20px; position: relative; transition: 0.3s; overflow: hidden; }}
             .rank-card:hover {{ transform: translateY(-5px); box-shadow: 0 8px 16px rgba(0,0,0,0.1); }}
             .rank-badge {{ position: absolute; top: -12px; left: -12px; background: #1a2a3a; color: white; width: 35px; height: 35px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; border: 3px solid #fff; }}
             .persistence-tag {{ float: right; background: #e74c3c; color: white; padding: 4px 10px; border-radius: 6px; font-size: 0.8em; font-weight: bold; }}
             
-            /* 品質バッジの定義 */
-            .q-badge {{ display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 0.75em; font-weight: bold; margin-top: 8px; margin-right: 4px; }}
+            /* 品質バッジ */
+            .quality-badges {{ margin-top: 8px; display: flex; gap: 5px; flex-wrap: wrap; }}
+            .q-badge {{ padding: 2px 6px; border-radius: 4px; font-size: 0.7em; font-weight: bold; text-transform: uppercase; }}
             .q-trend {{ background: #e8f5e9; color: #2e7d32; border: 1px solid #c8e6c9; }}
             .q-strict {{ background: #fff3e0; color: #ef6c00; border: 1px solid #ffe0b2; }}
 
@@ -275,31 +276,27 @@ def create_intelligence_report(df, acc_data=[]):
                     {{ label: "✅ 確立 (5〜9日)", filter: d => d.persistence >= 5 && d.persistence <= 9 }},
                     {{ label: "🌱 出現 (1〜4日)", filter: d => d.persistence <= 4 }}
                 ];
-
                 accTiers.forEach(tier => {{
                     const tierData = data.accumulation.filter(tier.filter).sort((a,b) => b.score - a.score);
                     if(tierData.length > 0) {{
-                        accHtml += `<div class="tier-header">${{tier.label}}</div>`;
-                        accHtml += `<table class="acc-table"><thead><tr><th>#</th><th>銘柄</th><th>出現</th><th>総合Score</th><th>続伸率</th><th>新高値比</th><th>VCP</th><th>Impulse</th></tr></thead><tbody>`;
+                        accHtml += `<div class="tier-header">${{tier.label}}</div><table class="acc-table"><thead><tr><th>#</th><th>銘柄</th><th>出現</th><th>総合Score</th><th>続伸率</th><th>新高値比</th><th>VCP</th><th>Impulse</th></tr></thead><tbody>`;
                         tierData.forEach((s, idx) => {{
                             accHtml += `<tr><td>${{idx+1}}</td><td class="ticker-name">${{s.ticker}}</td><td>${{s.persistence}}日</td><td class="score-val">${{s.score}}</td><td>${{s.consistency}}%</td><td>${{s.proximity}}%</td><td>${{s.tightness}}</td><td style="color:${{s.impulse === 'Blue' ? '#3498db' : '#95a5a6'}}">${{s.impulse}}</td></tr>`;
                         }});
                         accHtml += '</tbody></table><div style="margin-bottom:20px;"></div>';
                     }}
                 }});
-                accHtml += '</div>';
-                document.getElementById('accumulation-ranking-area').innerHTML = accHtml;
+                document.getElementById('accumulation-ranking-area').innerHTML = accHtml + '</div>';
 
                 const analyzed = data.stocks.map(s => {{
                     const pricesInPeriod = targetDates.map(d => s.prices[d]).filter(p => p !== null);
                     if (pricesInPeriod.length < 1) return null;
-                    
                     const persistence = pricesInPeriod.length;
                     const change = pricesInPeriod.length >= 2 ? ((pricesInPeriod[pricesInPeriod.length - 1] / pricesInPeriod[0]) - 1) * 100 : 0;
                     const vol = pricesInPeriod.length >= 2 ? ((Math.max(...pricesInPeriod) - Math.min(...pricesInPeriod)) / Math.min(...pricesInPeriod)) * 100 : 0;
                     const latestLaunchpad = s.launchpads[latestDate] || 0;
 
-                    // --- [復活] Stealth Accumulation Logic (4/5 days up, <3.5% daily) ---
+                    // --- Stealth Accumulation Logic ---
                     let stealthScore = 0;
                     if (pricesInPeriod.length >= 6) {{
                         const last6 = pricesInPeriod.slice(-6);
@@ -312,7 +309,7 @@ def create_intelligence_report(df, acc_data=[]):
                         if (upCount >= 4 && isTight) stealthScore = upCount;
                     }}
 
-                    // --- [復活] Momentum Stealth Logic (7/10 days up, <7.7% daily, 10EMA > 20SMA > 50SMA) ---
+                    // --- Momentum Stealth Logic ---
                     let momentumStealthScore = 0;
                     if (pricesInPeriod.length >= 11) {{
                         const last10 = pricesInPeriod.slice(-11);
@@ -329,7 +326,7 @@ def create_intelligence_report(df, acc_data=[]):
 
                     const latestPat = s.patterns[latestDate] || "";
                     const isTrendOk = latestPat.includes('[Trend_OK]');
-                    const isStrictVcp = latestPat.includes('VCP_3Steps_Validated');
+                    const isStrictVcp = latestPat.includes('Validated') || latestPat.includes('Strict');
 
                     let growth = 0, pattern = "－", launchpad = 0;
                     for(let i = periodLen - 1; i >= 0; i--) {{
@@ -349,23 +346,39 @@ def create_intelligence_report(df, acc_data=[]):
                     return 0;
                 }};
 
+                // 【修正：2階層表示ロジック】
                 const sections = [
                     {{ title: "🏆 Super Performance (全条件合格)", hint: "ミネルヴィニStage 2 ＋ 3段階VCP収縮合格", 
                         data: analyzed.filter(x => x.isTrendOk && x.isStrictVcp).sort(getSorter(['latestLaunchpad','persistence'], [-1,-1])).slice(0,10) }},
-                    {{ title: "🚀 Ready to Launch (即応銘柄) 総合 TOP 5", hint: "優先順位: 最新発射台 ➔ 定着 ➔ 成長 ➔ 騰落率", 
-                        data: analyzed.filter(x => x.latestLaunchpad > 0).sort(getSorter(['latestLaunchpad','persistence','growth','change'], [-1,-1,-1,-1])).slice(0,5) }},
+                    
+                    // VCP カテゴリ
+                    {{ title: "🚀 VCP [Quality Validated]", hint: "VCP系 ＋ Trend_OK または VCP_Strict 合格銘柄（全件表示）", 
+                        data: analyzed.filter(x => x.pattern.includes('VCP') && (x.isTrendOk || x.isStrictVcp)).sort(getSorter(['latestLaunchpad','persistence'], [-1,-1])) }},
+                    {{ title: "🚀 Ready to Launch - VCP (Top 5)", hint: "品質不問、VCPカテゴリの出現・スコア上位", 
+                        data: analyzed.filter(x => x.pattern.includes('VCP')).sort(getSorter(['latestLaunchpad','persistence'], [-1,-1])).slice(0,5) }},
+
+                    // PowerPlay カテゴリ
+                    {{ title: "⚡ PowerPlay [Trend Validated]", hint: "PowerPlay ＋ Trend_OK または VCP_Strict 合格銘柄（全件表示）", 
+                        data: analyzed.filter(x => x.pattern.includes('PowerPlay') && (x.isTrendOk || x.isStrictVcp)).sort(getSorter(['latestLaunchpad','persistence'], [-1,-1])) }},
+                    {{ title: "⚡ Ready to Launch - PowerPlay (Top 5)", hint: "品質不問、PowerPlayカテゴリの上位", 
+                        data: analyzed.filter(x => x.pattern.includes('PowerPlay')).sort(getSorter(['latestLaunchpad','persistence'], [-1,-1])).slice(0,5) }},
+
+                    // High-Base (Strict) カテゴリ
+                    {{ title: "📐 High-Base(Strict) [Quality Validated]", hint: "High-Base(Strict) ＋ 品質タグ合格銘柄（全件表示）", 
+                        data: analyzed.filter(x => x.pattern.includes('High-Base(Strict)') && (x.isTrendOk || x.isStrictVcp)).sort(getSorter(['latestLaunchpad','persistence'], [-1,-1])) }},
+                    {{ title: "🚀 Ready to Launch - High-Base (Strict) (Top 5)", hint: "品質不問、High-Base(Strict)の上位", 
+                        data: analyzed.filter(x => x.pattern.includes('High-Base(Strict)')).sort(getSorter(['latestLaunchpad','persistence'], [-1,-1])).slice(0,5) }},
+
+                    // High-Base (Normal) カテゴリ
+                    {{ title: "📐 High-Base [Quality Validated]", hint: "High-Base ＋ 品質タグ合格銘柄（全件表示）", 
+                        data: analyzed.filter(x => x.pattern.includes('High-Base') && !x.pattern.includes('Strict') && (x.isTrendOk || x.isStrictVcp)).sort(getSorter(['latestLaunchpad','persistence'], [-1,-1])) }},
+                    {{ title: "🚀 Ready to Launch - High-Base (Top 5)", hint: "品質不問、High-Baseの上位", 
+                        data: analyzed.filter(x => x.pattern.includes('High-Base') && !x.pattern.includes('Strict')).sort(getSorter(['latestLaunchpad','persistence'], [-1,-1])).slice(0,5) }},
+
                     {{ title: "🕵️ Stealth Accumulation (隠密買い集め)", hint: "優先順位: 隠密スコア ➔ 定着 ➔ 低ボラ ➔ 成長", 
                         data: analyzed.filter(x => x.stealthScore > 0).sort(getSorter(['stealthScore','persistence','vol','growth'], [-1,-1,1,-1])).slice(0,5) }},
                     {{ title: "🕵️ Momentum Stealth (短期加速)", hint: "優先順位: 隠密スコア ➔ 定着 ➔ 低ボラ ➔ 成長", 
                         data: analyzed.filter(x => x.momentumStealthScore > 0).sort(getSorter(['momentumStealthScore','persistence','vol','growth'], [-1,-1,1,-1])).slice(0,5) }},
-                    {{ title: "🚀 Ready to Launch - High-Base (Strict)", hint: "優先順位: 最新発射台 ➔ 定着 ➔ 低ボラ ➔ 成長", 
-                        data: analyzed.filter(x => x.latestLaunchpad > 0 && x.pattern.includes('Strict')).sort(getSorter(['latestLaunchpad','persistence','vol','growth'], [-1,-1,1,-1])).slice(0,5) }},
-                    {{ title: "🚀 Ready to Launch - High-Base", hint: "優先順位: 最新発射台 ➔ 定着 ➔ 低ボラ ➔ 成長", 
-                        data: analyzed.filter(x => x.latestLaunchpad > 0 && x.pattern.includes('High-Base') && !x.pattern.includes('Strict')).sort(getSorter(['latestLaunchpad','persistence','vol','growth'], [-1,-1,1,-1])).slice(0,5) }},
-                    {{ title: "🚀 Ready to Launch - VCP", hint: "優先順位: 最新発射台 ➔ 定着 ➔ 低ボラ ➔ 成長", 
-                        data: analyzed.filter(x => x.latestLaunchpad > 0 && x.pattern.includes('VCP')).sort(getSorter(['latestLaunchpad','persistence','vol','growth'], [-1,-1,1,-1])).slice(0,5) }},
-                    {{ title: "🚀 Ready to Launch - PowerPlay(70%+)", hint: "優先順位: 最新発射台 ➔ 定着 ➔ 低ボラ ➔ 成長", 
-                        data: analyzed.filter(x => x.latestLaunchpad > 0 && x.pattern.includes('PowerPlay')).sort(getSorter(['latestLaunchpad','persistence','vol','growth'], [-1,-1,1,-1])).slice(0,5) }},
                     {{ title: "🏆 総合・サバイバルリーダー", hint: "優先順位: 定着 ➔ 騰落率 ➔ 成長 ➔ 低ボラ", 
                         data: [...analyzed].sort(getSorter(['persistence','change','growth','vol'], [-1,-1,-1,1])).slice(0,5) }}
                 ];
@@ -387,7 +400,7 @@ def create_intelligence_report(df, acc_data=[]):
                                 <div class="metric-row"><span>期間騰落</span> <b style="color:${{s.change >=0 ? '#e74c3c':'#2980b9'}}">${{s.change.toFixed(1)}}%</b></div>
                                 <div class="metric-row"><span>売上成長</span> <b>${{s.growth}}%</b></div>
                             </div>
-                            <div class="pattern-tag">${{s.pattern}}</div>
+                            <div class="pattern-tag" title="${{s.pattern}}">${{s.pattern}}</div>
                         </div>`;
                     }});
                     html += "</div></div>";
