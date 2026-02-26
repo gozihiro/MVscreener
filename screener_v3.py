@@ -185,7 +185,8 @@ def run_screener():
         batch = universe[i:i + BATCH_SIZE]
         try:
             log(f"    [進捗] {i}/{total} 分析中...")
-            data = yf.download(batch, period="1y", interval="1d", progress=False, auto_adjust=True, threads=True)
+            # period="1y"は稀に252日を下回るため"2y"に延長
+            data = yf.download(batch, period="2y", interval="1d", progress=False, auto_adjust=True, threads=True)
             if data.empty: time.sleep(120); continue
 
             for ticker in batch:
@@ -215,7 +216,7 @@ def run_screener():
                     # --- 1. ミネルヴィニ・トレンドテンプレート (厳密8条件) ---
                     template_ok = (
                         curr_p > sma50.iloc[-1] > sma150.iloc[-1] > sma200.iloc[-1] and
-                        (sma200.iloc[-20:].diff().dropna() > 0).all() and
+                        sma200.iloc[-1] > sma200.iloc[-20] and
                         curr_p >= low_52w * 1.30 and
                         curr_p >= high_52w * 0.75
                     )
@@ -235,8 +236,8 @@ def run_screener():
                     # --- 3. 既存ロジック判定 (母集団確保用) ---
                     # A. VCP_Original (ボラティリティ極小化)
                     if (curr_p > sma20.iloc[-1] > sma50.iloc[-1] > sma200.iloc[-1]) and \
-                       (sma200.iloc[-20:].diff().dropna() > 0).all() and \
-                       (c.rolling(20).std()*4/sma20).iloc[-1] == (c.rolling(20).std()*4/sma20).iloc[-20:].min():
+                       (sma200.iloc[-1] > sma200.iloc[-20]) and \
+                       (c.rolling(20).std()*4/sma20).iloc[-1] <= (c.rolling(20).std()*4/sma20).iloc[-20:].min() * 1.05:
                         tags.append("VCP_Original")
 
                     # B. PowerPlay & High-Base
