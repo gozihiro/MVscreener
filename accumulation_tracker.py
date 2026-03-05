@@ -199,9 +199,14 @@ def run_tracker():
                         new_count = (prev_state['count'] + 1) if prev_state else 1
                         new_filename = f"[{new_count:02d}]_{ticker}_{today_str}{suffix}.csv"
                         
-                        # フォルダ内の古い同銘柄ファイルを削除
+                        # フォルダ内の古い同銘柄ファイルを削除 (リトライロジック追加)
                         if prev_state:
-                            service.files().delete(fileId=prev_state['id']).execute()
+                            try:
+                                service.files().delete(fileId=prev_state['id']).execute()
+                            except:
+                                time.sleep(2)
+                                try: service.files().delete(fileId=prev_state['id']).execute()
+                                except: pass
                         
                         # 保存
                         output = io.StringIO()
@@ -225,10 +230,15 @@ def run_tracker():
         print(f"Progress: {min(i + BATCH_SIZE, len(watchlist))} tickers scanned...")
         time.sleep(BATCH_SLEEP_BASE + random.uniform(0, 10))
 
-    # 脱落銘柄のクリーンアップ
+    # 脱落銘柄のクリーンアップ (リトライロジック追加)
     for ticker, state in current_states.items():
         if ticker in scanned_tickers and ticker not in processed_tickers:
-            service.files().delete(fileId=state['id']).execute()
+            try:
+                service.files().delete(fileId=state['id']).execute()
+            except:
+                time.sleep(2)
+                try: service.files().delete(fileId=state['id']).execute()
+                except: pass
             print(f"Drop: {ticker}")
 
 if __name__ == "__main__":
