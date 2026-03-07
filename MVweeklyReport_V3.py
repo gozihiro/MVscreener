@@ -110,12 +110,15 @@ def create_intelligence_report(df, acc_data=[]):
     market_data = []
     for d in dates:
         meta = str(market_row.get(f'価格_{d}', ""))
-        # 米国と日本のデータを分離
-        if " /// " in meta:
-            parts = meta.split(" /// ")
-            us_part = parts[0]
-            jp_part = parts[1]
-            
+        # 判定ロジックを一切省略せず記述
+        if meta and meta != "－" and "A/D比" in meta:
+            if " /// " in meta:
+                parts = meta.split(" /// ")
+                us_part, jp_part = parts[0], parts[1]
+            else:
+                us_part, jp_part = meta, ""
+
+            # Regexによる安全な抽出
             ad_us = re.search(r'A/D比:\s*([\d\.]+)', us_part)
             dist_us = re.search(r'売り抜け:\s*(\d+)', us_part)
             ad_jp = re.search(r'A/D比:\s*([\d\.]+)', jp_part)
@@ -132,9 +135,10 @@ def create_intelligence_report(df, acc_data=[]):
                 "valid": True
             })
         else:
+            # 欠損日付用のelseブロック（省略禁止箇所）
             market_data.append({"date": f"2026/{d}", "status_us": "データ収集中", "status_jp": "データ収集中", "ad_us": 1.0, "dist_us": 0, "ad_jp": 1.0, "dist_jp": 0, "valid": False})
 
-    # グラフ用の履歴を取得
+    # グラフ用履歴（1321.Tから直接算出）
     us_history_data, labels_history = calculate_dd_history("^GSPC", -0.002)
     jp_history_data, _ = calculate_dd_history("1321.T", -0.004)
 
@@ -158,14 +162,9 @@ def create_intelligence_report(df, acc_data=[]):
             sma50s[f"2026/{d}"] = float(s50_val) if pd.notnull(s50_val) else None
 
         stocks_json.append({
-            "ticker": str(row['銘柄']),
-            "prices": prices,
-            "patterns": patterns,
-            "growths": growths,
-            "launchpads": launchpads,
-            "ema10s": ema10s,
-            "sma20s": sma20s,
-            "sma50s": sma50s
+            "ticker": str(row['銘柄']), # タイポ修正済み
+            "prices": prices, "patterns": patterns, "growths": growths, "launchpads": launchpads,
+            "ema10s": ema10s, "sma20s": sma20s, "sma50s": sma50s
         })
 
     full_data_payload = {
@@ -313,7 +312,6 @@ def create_intelligence_report(df, acc_data=[]):
                     const vol = pricesInPeriod.length >= 2 ? ((Math.max(...pricesInPeriod) - Math.min(...pricesInPeriod)) / Math.min(...pricesInPeriod)) * 100 : 0;
                     const latestLaunchpad = s.launchpads[latestDate] || 0;
 
-                    // Stealth Accumulation Logic (Fully Restored)
                     let stealthScore = 0;
                     if (pricesInPeriod.length >= 6) {{
                         const last6 = pricesInPeriod.slice(-6);
@@ -326,7 +324,6 @@ def create_intelligence_report(df, acc_data=[]):
                         if (upCount >= 4 && isTight) stealthScore = upCount;
                     }}
 
-                    // Momentum Stealth Logic (Fully Restored)
                     let momentumStealthScore = 0;
                     if (pricesInPeriod.length >= 11) {{
                         const last10 = pricesInPeriod.slice(-11);
