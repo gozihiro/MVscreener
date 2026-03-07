@@ -69,7 +69,9 @@ def fetch_weekly_data():
             fh.seek(0)
             raw_data = fh.read().decode('utf-8-sig').splitlines()
             
-            metadata_line = raw_data[0] if raw_data else "No Metadata"
+            # --- メタデータ行の解析: REPORT_METADATA, を除去して US /// JP の中身を抽出 ---
+            metadata_raw = raw_data[0] if raw_data else "No Metadata"
+            metadata_line = metadata_raw.split(',', 1)[1] if ',' in metadata_raw else metadata_raw
             market_metadatas.append({'Date': market_date, 'Metadata': metadata_line})
             
             df = pd.read_csv(io.StringIO("\n".join(raw_data[1:])))
