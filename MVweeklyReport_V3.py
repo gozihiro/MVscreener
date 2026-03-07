@@ -158,7 +158,7 @@ def create_intelligence_report(df, acc_data=[]):
             sma50s[f"2026/{d}"] = float(s50_val) if pd.notnull(s50_val) else None
 
         stocks_json.append({
-            "ticker": str(row['銘銘柄']),
+            "ticker": str(row['銘柄']),
             "prices": prices,
             "patterns": patterns,
             "growths": growths,
