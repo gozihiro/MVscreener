@@ -153,6 +153,62 @@ def get_market_health_summary():
         log(f"❌ 市場判定エラー: {e}")
         return "エラー停止", 0, 0, 0
 
+def get_jp_full_universe():
+    """日本市場の全銘柄リスト取得"""
+    log(">> ステップ1.1: 日本市場の全銘柄リスト取得中...")
+    try:
+        url = "https://raw.githubusercontent.com/ta9mar/jp-stock-codes/master/codes-all.csv"
+        df = pd.read_csv(url)
+        tickers = [f"{str(code)}.T" for code in df['code'].tolist()]
+        return tickers
+    except Exception as e:
+        log(f"【エラー】日本市場銘柄リスト取得失敗: {e}")
+        return []
+
+def get_jp_market_summary():
+    """日本市場の環境解析（全件A/D、1321.Tによる指数判定）"""
+    log(">> ステップ1.2: 日本市場の解析開始...")
+    try:
+        # 1. 指数データ
+        idx = yf.download("1321.T", period="100d", progress=False, auto_adjust=True)
+        if isinstance(idx.columns, pd.MultiIndex): idx.columns = idx.columns.get_level_values(0)
+        c = idx['Close'].squeeze()
+        v = idx['Volume'].squeeze()
+        v_sma50 = v.rolling(50).mean()
+        changes = c.pct_change()
+        
+        dist_days = 0
+        for i in range(25, 0, -1):
+            curr, prev = -i, -i-1
+            if changes.iloc[curr] <= -0.004 and v.iloc[curr] > v.iloc[prev] and v.iloc[curr] > v_sma50.iloc[curr]:
+                dist_days += 1
+        
+        ma200 = c.rolling(200).mean().iloc[-1] if len(c) >= 200 else c.mean()
+        curr_p = c.iloc[-1]
+
+        # 2. A/D比（全銘柄）
+        jp_universe = get_jp_full_universe()
+        adv, dec = 0, 0
+        if jp_universe:
+            for i in range(0, len(jp_universe), 100):
+                batch = jp_universe[i:i + 100]
+                try:
+                    batch_data = yf.download(batch, period="2d", progress=False, auto_adjust=True)['Close']
+                    if batch_data.empty: continue
+                    diff = batch_data.iloc[-1] - batch_data.iloc[-2]
+                    adv += (diff > 0).sum()
+                    dec += (diff < 0).sum()
+                except: continue
+        
+        ad_ratio = round(adv / max(1, dec), 2)
+        if curr_p < ma200 or dist_days >= 6: status = "🔴 下落警戒 (Market Under Pressure)"
+        elif dist_days >= 4 or ad_ratio < 0.8: status = "🔶 上昇負担 (Uptrend Under Pressure)"
+        else: status = "🚀 上昇確認 (Confirmed Uptrend)"
+
+        return f"JP_METADATA,{status} | A/D比:{ad_ratio} (↑{adv} ↓{dec}) | 売り抜け:{dist_days}日"
+    except Exception as e:
+        return f"JP_METADATA,解析エラー:{str(e)}"
+
 def get_full_universe():
     """SECから主要取引所の銘柄リストを取得"""
     log(">> ステップ2: 銘柄リスト取得中...")
@@ -171,6 +227,7 @@ def get_full_universe():
 def run_screener():
     log("=== スクリーナー V3 起動（発射台スコア搭載） ===")
     mkt_status, dist_count, low_days, index_change = get_market_health_summary()
+    jp_market_summary = get_jp_market_summary()
     market_summary = f"{mkt_status} (売り抜け:{dist_count}日 / 安値から:{low_days}日目)"
     log(f"--- 市場環境: {market_summary} ---")
 
@@ -290,7 +347,7 @@ def run_screener():
 
     df_final = pd.DataFrame(results if results else [{"結果": "的中なし"}])
     with open(LOCAL_SAVE_PATH, 'w', encoding='utf-8-sig') as f:
-        f.write(f"REPORT_METADATA,{final_mkt_summary}\n")
+        f.write(f"REPORT_METADATA,{final_mkt_summary} /// {jp_market_summary}\n")
         df_final.to_csv(f, index=False)
     
     date_str = datetime.now().strftime('%Y%m%d')
