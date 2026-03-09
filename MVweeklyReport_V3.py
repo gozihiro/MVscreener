@@ -32,15 +32,20 @@ def calculate_dd_history(ticker, threshold=-0.002):
     """指数の履歴から売り抜け日の推移を計算（グラフ用）"""
     try:
         idx = yf.download(ticker, period="60d", progress=False, auto_adjust=True)
+        if idx.empty: return [0]*30, ["-"]*30
         if isinstance(idx.columns, pd.MultiIndex): idx.columns = idx.columns.get_level_values(0)
+        
         c = idx['Close'].squeeze()
         v = idx['Volume'].squeeze()
         v_sma50 = v.rolling(50).mean()
         changes = c.pct_change()
         
-        is_dd = (changes <= threshold) & (v > v.shift(1))
+        is_dd = (changes <= threshold) & (v > v.shift(1)) & (v > v_sma50)
         dd_counts = is_dd.rolling(window=25).sum().fillna(0).astype(int)
-        return dd_counts.tail(30).tolist(), dd_counts.index[-30:].strftime('%m/%d').tolist()
+        
+        # 描画ズレ防止のため日付形式をCSV(2026/MM/DD)に統一
+        labels = [f"2026/{d}" for d in dd_counts.index[-30:].strftime('%m/%d')]
+        return dd_counts.tail(30).tolist(), labels
     except:
         return [0]*30, ["-"]*30
 
@@ -110,7 +115,6 @@ def create_intelligence_report(df, acc_data=[]):
     market_data = []
     for d in dates:
         meta = str(market_row.get(f'価格_{d}', ""))
-        # 判定ロジックを一切省略せず記述
         if meta and meta != "－" and "A/D比" in meta:
             if " /// " in meta:
                 parts = meta.split(" /// ")
@@ -118,7 +122,6 @@ def create_intelligence_report(df, acc_data=[]):
             else:
                 us_part, jp_part = meta, ""
 
-            # Regexによる安全な抽出
             ad_us = re.search(r'A/D比:\s*([\d\.]+)', us_part)
             dist_us = re.search(r'売り抜け:\s*(\d+)', us_part)
             ad_jp = re.search(r'A/D比:\s*([\d\.]+)', jp_part)
@@ -135,10 +138,8 @@ def create_intelligence_report(df, acc_data=[]):
                 "valid": True
             })
         else:
-            # 欠損日付用のelseブロック（省略禁止箇所）
             market_data.append({"date": f"2026/{d}", "status_us": "データ収集中", "status_jp": "データ収集中", "ad_us": 1.0, "dist_us": 0, "ad_jp": 1.0, "dist_jp": 0, "valid": False})
 
-    # グラフ用履歴（1321.Tから直接算出）
     us_history_data, labels_history = calculate_dd_history("^GSPC", -0.002)
     jp_history_data, _ = calculate_dd_history("1321.T", -0.004)
 
@@ -162,21 +163,15 @@ def create_intelligence_report(df, acc_data=[]):
             sma50s[f"2026/{d}"] = float(s50_val) if pd.notnull(s50_val) else None
 
         stocks_json.append({
-            "ticker": str(row['銘柄']), # タイポ修正済み
+            "ticker": str(row['銘柄']),
             "prices": prices, "patterns": patterns, "growths": growths, "launchpads": launchpads,
             "ema10s": ema10s, "sma20s": sma20s, "sma50s": sma50s
         })
 
     full_data_payload = {
         "dates": [f"2026/{d}" for d in dates],
-        "market": market_data,
-        "stocks": stocks_json,
-        "accumulation": acc_data,
-        "history": {
-            "labels": labels_history,
-            "us": us_history_data,
-            "jp": jp_history_data
-        }
+        "market": market_data, "stocks": stocks_json, "accumulation": acc_data,
+        "history": {"labels": labels_history, "us": us_history_data, "jp": jp_history_data}
     }
 
     html_content = f"""
@@ -192,10 +187,12 @@ def create_intelligence_report(df, acc_data=[]):
             .control-panel {{ background: #1a2a3a; color: white; padding: 25px; border-radius: 15px; display: flex; align-items: center; gap: 30px; margin-bottom: 30px; position: sticky; top: 10px; z-index: 1000; box-shadow: 0 8px 20px rgba(0,0,0,0.15); }}
             .date-input {{ background: #2c3e50; border: 1px solid #455a64; color: white; padding: 10px; border-radius: 8px; font-size: 1em; cursor: pointer; }}
             .card {{ background: white; border-radius: 20px; padding: 30px; margin-bottom: 30px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); border-top: 6px solid #3498db; }}
-            .market-grid {{ display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; text-align: center; font-size: 1em; background: #f8f9fa; padding: 20px; border-radius: 12px; }}
-            .market-status-box {{ padding: 10px; border-radius: 8px; background: white; border: 1px solid #eee; }}
-            .market-status-box h4 {{ margin: 0 0 10px 0; color: #7f8c8d; font-size: 0.9em; }}
-            .market-val {{ font-size: 1.1em; font-weight: bold; color: #1a2a3a; }}
+            .market-grid {{ display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }}
+            .market-status-box {{ padding: 20px; border-radius: 12px; background: #f8f9fa; border: 1px solid #eee; }}
+            .market-status-box h3 {{ margin: 0 0 15px 0; color: #2c3e50; font-size: 1.1em; border-bottom: 2px solid #eee; padding-bottom: 10px; }}
+            .status-metrics {{ display: grid; grid-template-columns: repeat(3, 1fr); text-align: center; gap: 10px; }}
+            .metric-label {{ font-size: 0.8em; color: #7f8c8d; margin-bottom: 5px; }}
+            .metric-val {{ font-size: 1em; font-weight: bold; color: #1a2a3a; }}
             .section-title {{ font-size: 1.8em; margin: 40px 0 20px 0; border-left: 10px solid #3498db; padding-left: 20px; color: #1a2a3a; }}
             .rank-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 20px; }}
             .rank-card {{ background: #fff; border: 1px solid #e0e0e0; border-radius: 15px; padding: 20px; position: relative; transition: 0.3s; overflow: hidden; }}
@@ -232,7 +229,7 @@ def create_intelligence_report(df, acc_data=[]):
             <div class="card">
                 <h2 style="margin-top:0;">🌍 市場環境の変遷 (Fact-Check)</h2>
                 <div class="market-grid" id="market-stats"></div>
-                <div style="display:flex; gap:10px;">
+                <div style="display:flex; gap:10px; margin-top:20px;">
                     <div id="chart-market-us" style="height:350px; flex:1;"></div>
                     <div id="chart-market-jp" style="height:350px; flex:1;"></div>
                 </div>
@@ -281,8 +278,22 @@ def create_intelligence_report(df, acc_data=[]):
 
                 const mEnd = data.market.find(m => m.date === latestDate);
                 document.getElementById('market-stats').innerHTML = `
-                    <div class="market-status-box"><h4>🇺🇸 米国市場</h4><span class="market-val">${{mEnd.status_us}}</span><br><small>A/D比: ${{mEnd.ad_us.toFixed(2)}} | 売り抜け: ${{mEnd.dist_us}}日</small></div>
-                    <div class="market-status-box"><h4>🇯🇵 日本市場</h4><span class="market-val">${{mEnd.status_jp}}</span><br><small>A/D比: ${{mEnd.ad_jp.toFixed(2)}} | 売り抜け: ${{mEnd.dist_jp}}日</small></div>
+                    <div class="market-status-box">
+                        <h3>🇺🇸 米国市場 (S&P500)</h3>
+                        <div class="status-metrics">
+                            <div><div class="metric-label">現状</div><div class="metric-val" style="font-size:0.9em">${{mEnd.status_us}}</div></div>
+                            <div><div class="metric-label">A/D比</div><div class="metric-val">${{mEnd.ad_us.toFixed(2)}}</div></div>
+                            <div><div class="metric-label">売り抜け日</div><div class="metric-val">${{mEnd.dist_us}}日</div></div>
+                        </div>
+                    </div>
+                    <div class="market-status-box">
+                        <h3>🇯🇵 日本市場 (日経225)</h3>
+                        <div class="status-metrics">
+                            <div><div class="metric-label">現状</div><div class="metric-val" style="font-size:0.9em">${{mEnd.status_jp}}</div></div>
+                            <div><div class="metric-label">A/D比</div><div class="metric-val">${{mEnd.ad_jp.toFixed(2)}}</div></div>
+                            <div><div class="metric-label">売り抜け日</div><div class="metric-val">${{mEnd.dist_jp}}日</div></div>
+                        </div>
+                    </div>
                 `;
 
                 // Accumulation Ranking (Unchanged)
@@ -419,15 +430,25 @@ def create_intelligence_report(df, acc_data=[]):
                 }});
                 document.getElementById('dynamic-rankings-area').innerHTML = html;
 
-                const chartData = targetDates.map(d => data.market.find(m => m.date===d)).filter(m => m.valid);
+                // --- チャート描画 (同期ラベル同期) ---
+                const historyLabels = data.history.labels;
+                const usAdValues = historyLabels.map(label => {{
+                    const m = data.market.find(m => m.date === label);
+                    return m && m.valid ? m.ad_us : null;
+                }});
+                const jpAdValues = historyLabels.map(label => {{
+                    const m = data.market.find(m => m.date === label);
+                    return m && m.valid ? m.ad_jp : null;
+                }});
+
                 Plotly.newPlot('chart-market-us', [
-                    {{ x: chartData.map(m => m.date), y: chartData.map(m => m.ad_us), name: 'US A/D比', type: 'scatter', line: {{width:3, color:'#3498db'}} }},
-                    {{ x: data.history.labels, y: data.history.us, name: 'US 売り抜け', type: 'bar', opacity: 0.2, marker: {{color:'#e74c3c'}}, yaxis: 'y2' }}
+                    {{ x: historyLabels, y: usAdValues, name: 'A/D比', type: 'scatter', line: {{width:4, color:'#3498db'}} }},
+                    {{ x: historyLabels, y: data.history.us, name: '売り抜け', type: 'bar', opacity: 0.3, marker: {{color:'#e74c3c'}}, yaxis: 'y2' }}
                 ], {{ title: '🇺🇸 US Market Environment', yaxis: {{title: 'A/D比'}}, yaxis2: {{overlaying:'y', side:'right', title: '売り抜け'}}, margin: {{t:40, b:40, l:50, r:50}}, template: 'plotly_white', showlegend: false }});
 
                 Plotly.newPlot('chart-market-jp', [
-                    {{ x: chartData.map(m => m.date), y: chartData.map(m => m.ad_jp), name: 'JP A/D比', type: 'scatter', line: {{width:3, color:'#27ae60'}} }},
-                    {{ x: data.history.labels, y: data.history.jp, name: 'JP 売り抜け', type: 'bar', opacity: 0.2, marker: {{color:'#e67e22'}}, yaxis: 'y2' }}
+                    {{ x: historyLabels, y: jpAdValues, name: 'A/D比', type: 'scatter', line: {{width:4, color:'#27ae60'}} }},
+                    {{ x: historyLabels, y: data.history.jp, name: '売り抜け', type: 'bar', opacity: 0.3, marker: {{color:'#e67e22'}}, yaxis: 'y2' }}
                 ], {{ title: '🇯🇵 JP Market Environment', yaxis: {{title: 'A/D比'}}, yaxis2: {{overlaying:'y', side:'right', title: '売り抜け'}}, margin: {{t:40, b:40, l:50, r:50}}, template: 'plotly_white', showlegend: false }});
 
                 const scatterData = [...analyzed].sort((a, b) => a.launchpad - b.launchpad);
