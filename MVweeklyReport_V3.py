@@ -29,9 +29,9 @@ def get_drive_service():
     return build('drive', 'v3', credentials=creds)
 
 def calculate_dd_history(ticker, threshold=-0.002):
-    """指数の履歴から売り抜け日の推移を計算（グラフ用）"""
+    """指数の履歴から売り抜け日の推移を計算（5%失効ルール近似版）"""
     try:
-        idx = yf.download(ticker, period="60d", progress=False, auto_adjust=True)
+        idx = yf.download(ticker, period="100d", progress=False, auto_adjust=True)
         if idx.empty: return [0]*30, ["-"]*30
         if isinstance(idx.columns, pd.MultiIndex): idx.columns = idx.columns.get_level_values(0)
         
@@ -40,12 +40,25 @@ def calculate_dd_history(ticker, threshold=-0.002):
         v_sma50 = v.rolling(50).mean()
         changes = c.pct_change()
         
-        is_dd = (changes <= threshold) & (v > v.shift(1)) & (v > v_sma50)
-        dd_counts = is_dd.rolling(window=25).sum().fillna(0).astype(int)
+        # 基本的な売り抜け日判定
+        is_dd_base = (changes <= threshold) & (v > v.shift(1)) & (v > v_sma50)
         
-        # 描画ズレ防止のため日付形式をCSV(2026/MM/DD)に統一
-        labels = [f"2026/{d}" for d in dd_counts.index[-30:].strftime('%m/%d')]
-        return dd_counts.tail(30).tolist(), labels
+        dd_counts = []
+        # 各日において過去25日間の累積を計算（5%ルールを考慮）
+        for i in range(len(c) - 30, len(c)):
+            count = 0
+            # 過去25取引日を検証
+            for j in range(i - 24, i + 1):
+                if j < 0: continue
+                if is_dd_base.iloc[j]:
+                    # 5%失効判定: その日(j)から計算対象日(i)までの間に株価が5%以上戻したか
+                    subsequent_high = c.iloc[j+1 : i+1].max() if j < i else 0
+                    if not (subsequent_high >= c.iloc[j] * 1.05):
+                        count += 1
+            dd_counts.append(count)
+            
+        labels = [f"2026/{d}" for d in c.index[-30:].strftime('%m/%d')]
+        return dd_counts, labels
     except:
         return [0]*30, ["-"]*30
 
@@ -192,7 +205,7 @@ def create_intelligence_report(df, acc_data=[]):
             .market-status-box h3 {{ margin: 0 0 15px 0; color: #2c3e50; font-size: 1.1em; border-bottom: 2px solid #eee; padding-bottom: 10px; }}
             .status-metrics {{ display: grid; grid-template-columns: repeat(3, 1fr); text-align: center; gap: 10px; }}
             .metric-label {{ font-size: 0.8em; color: #7f8c8d; margin-bottom: 5px; }}
-            .metric-val {{ font-size: 1em; font-weight: bold; color: #1a2a3a; }}
+            .metric-val {{ font-size: 0.9em; font-weight: bold; color: #1a2a3a; }}
             .section-title {{ font-size: 1.8em; margin: 40px 0 20px 0; border-left: 10px solid #3498db; padding-left: 20px; color: #1a2a3a; }}
             .rank-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 20px; }}
             .rank-card {{ background: #fff; border: 1px solid #e0e0e0; border-radius: 15px; padding: 20px; position: relative; transition: 0.3s; overflow: hidden; }}
@@ -281,7 +294,7 @@ def create_intelligence_report(df, acc_data=[]):
                     <div class="market-status-box">
                         <h3>🇺🇸 米国市場 (S&P500)</h3>
                         <div class="status-metrics">
-                            <div><div class="metric-label">現状</div><div class="metric-val" style="font-size:0.9em">${{mEnd.status_us}}</div></div>
+                            <div><div class="metric-label">現状</div><div class="metric-val">${{mEnd.status_us}}</div></div>
                             <div><div class="metric-label">A/D比</div><div class="metric-val">${{mEnd.ad_us.toFixed(2)}}</div></div>
                             <div><div class="metric-label">売り抜け日</div><div class="metric-val">${{mEnd.dist_us}}日</div></div>
                         </div>
@@ -289,7 +302,7 @@ def create_intelligence_report(df, acc_data=[]):
                     <div class="market-status-box">
                         <h3>🇯🇵 日本市場 (日経225)</h3>
                         <div class="status-metrics">
-                            <div><div class="metric-label">現状</div><div class="metric-val" style="font-size:0.9em">${{mEnd.status_jp}}</div></div>
+                            <div><div class="metric-label">現状</div><div class="metric-val">${{mEnd.status_jp}}</div></div>
                             <div><div class="metric-label">A/D比</div><div class="metric-val">${{mEnd.ad_jp.toFixed(2)}}</div></div>
                             <div><div class="metric-label">売り抜け日</div><div class="metric-val">${{mEnd.dist_jp}}日</div></div>
                         </div>
@@ -374,30 +387,24 @@ def create_intelligence_report(df, acc_data=[]):
                 const sections = [
                     {{ title: "🏆 Super Performance (全条件合格)", hint: "優先順位: 最新スコア ➔ 定着日数", 
                         data: analyzed.filter(x => x.isTrendOk && x.isStrictVcp).sort(getSorter(['latestLaunchpad','persistence'], [-1,-1])).slice(0,10) }},
-                    
                     {{ title: "🚀 Ready to Launch (即応銘柄) 総合 TOP 5", hint: "優先順位: 最新発射台 ➔ 定着 ➔ 成長率", 
                         data: analyzed.filter(x => x.latestLaunchpad > 0).sort(getSorter(['latestLaunchpad','persistence','growth'], [-1,-1,-1])).slice(0,5) }},
-
                     {{ title: "🚀 VCP [Quality Validated]", hint: "品質タグ合格銘柄 (すべて表示) | 順位: 定着日数 ➔ 最新発射台", 
                         data: analyzed.filter(x => x.pattern.includes('VCP') && (x.isTrendOk || x.isStrictVcp)).sort(getSorter(['persistence','latestLaunchpad'], [-1,-1])) }},
                     {{ title: "🚀 VCP [Category TOP 5]", hint: "品質不問 | 優先順位: 定着日数 ➔ 最新発射台", 
                         data: analyzed.filter(x => x.pattern.includes('VCP')).sort(getSorter(['persistence','latestLaunchpad'], [-1,-1])).slice(0,5) }},
-
                     {{ title: "⚡ PowerPlay [Trend Validated]", hint: "品質タグ合格銘柄 (すべて表示) | 順位: 定着日数 ➔ 期間騰落率", 
                         data: analyzed.filter(x => x.pattern.includes('PowerPlay') && (x.isTrendOk || x.isStrictVcp)).sort(getSorter(['persistence','change'], [-1,-1])) }},
                     {{ title: "⚡ PowerPlay [Category TOP 5]", hint: "品質不問 | 優先順位: 期間騰落率 ➔ 定着日数", 
                         data: analyzed.filter(x => x.pattern.includes('PowerPlay')).sort(getSorter(['change','persistence'], [-1,-1])).slice(0,5) }},
-
                     {{ title: "📐 High-Base(Strict) [Quality Validated]", hint: "品質タグ合格銘柄 (すべて表示) | 順位: 定着日数 ➔ 最新発射台", 
                         data: analyzed.filter(x => x.pattern.includes('High-Base(Strict)') && (x.isTrendOk || x.isStrictVcp)).sort(getSorter(['persistence','latestLaunchpad'], [-1,-1])) }},
                     {{ title: "📐 High-Base(Strict) [Category TOP 5]", hint: "品質不問 | 優先順位: 定着日数 ➔ 最新発射台", 
                         data: analyzed.filter(x => x.pattern.includes('High-Base(Strict)')).sort(getSorter(['persistence','latestLaunchpad'], [-1,-1])).slice(0,5) }},
-
                     {{ title: "📐 High-Base [Quality Validated]", hint: "品質タグ合格銘柄 (すべて表示) | 順位: 定着日数 ➔ 最新発射台", 
                         data: analyzed.filter(x => x.pattern.includes('High-Base') && !x.pattern.includes('Strict') && (x.isTrendOk || x.isStrictVcp)).sort(getSorter(['persistence','latestLaunchpad'], [-1,-1])) }},
                     {{ title: "📐 High-Base [Category TOP 5]", hint: "品質不問 | 優先順位: 定着日数 ➔ 最新発射台", 
                         data: analyzed.filter(x => x.pattern.includes('High-Base') && !x.pattern.includes('Strict')).sort(getSorter(['persistence','latestLaunchpad'], [-1,-1])).slice(0,5) }},
-
                     {{ title: "🕵️ Stealth Accumulation (隠密買い集め)", hint: "優先順位: 隠密スコア ➔ 定着 ➔ 低ボラ", 
                         data: analyzed.filter(x => x.stealthScore > 0).sort(getSorter(['stealthScore','persistence','vol'], [-1,-1,1])).slice(0,5) }},
                     {{ title: "🕵️ Momentum Stealth (短期加速)", hint: "優先順位: 隠密スコア ➔ 定着 ➔ 低ボラ", 
