@@ -295,13 +295,19 @@ def run_screener():
                         if (curr_p/c.iloc[-40] >= 1.70) and (curr_p/h.iloc[-40:].max() >= 0.75):
                             tags.append("PowerPlay(70%+)")
                         
-                        # 【修正】ハイベース判定：4週間(20日)の終値が10%以内のレンジに収束
-                        c_flag = c.tail(20)
-                        if (1.10 <= curr_p/c.iloc[-20] <= 1.70) and (c_flag.max() / c_flag.min() <= 1.10):
+                        # 【修正】ハイベース判定：3-6週間(15-30日)の間、現在まで継続して終値が10%以内であるか
+                        tight_duration = 0
+                        for d_idx in range(1, 31):
+                            if len(c) < d_idx: break
+                            win = c.tail(d_idx)
+                            if (win.max() / win.min() <= 1.10): tight_duration = d_idx
+                            else: break
+
+                        if (1.10 <= curr_p/c.iloc[-20] <= 1.70) and (15 <= tight_duration <= 30):
                             if (c.iloc[-5:].pct_change() >= 0.10).any() and (v.iloc[-3:] < vol_sma50.iloc[-3:]).all():
-                                tags.append("High-Base(Strict)")
+                                tags.append(f"High-Base(Strict:{tight_duration}d)")
                             else:
-                                tags.append("High-Base")
+                                tags.append(f"High-Base({tight_duration}d)")
 
                     # --- C. Micro-VCP (3-Day Silence) ---
                     p1, p2, p3 = df.iloc[-2], df.iloc[-3], df.iloc[-4]
