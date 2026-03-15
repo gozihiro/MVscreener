@@ -385,6 +385,19 @@ def create_intelligence_report(df, acc_data=[]):
                 }};
 
                 const sections = [
+                    {{ 
+                        title: "🎯 Micro-VCP (静寂からのブレイク準備)", 
+                        hint: "優先順位: 最新発射台 ➔ 定着日数 ➔ 低リスク(Risk%)", 
+                        data: analyzed.filter(x => x.pattern.includes('Micro-VCP'))
+                                      .sort((a, b) => {{
+                                          // 1. 発射台スコア (降順)
+                                          if (b.latestLaunchpad !== a.latestLaunchpad) {{
+                                              return b.latestLaunchpad - a.latestLaunchpad;
+                                          }}
+                                          // 2. 定着日数 (降順)
+                                          return b.persistence - a.persistence;
+                                      }}) 
+                    }},
                     {{ title: "🏆 Super Performance (全条件合格)", hint: "優先順位: 最新スコア ➔ 定着日数", 
                         data: analyzed.filter(x => x.isTrendOk && x.isStrictVcp).sort(getSorter(['latestLaunchpad','persistence'], [-1,-1])).slice(0,10) }},
                     {{ title: "🚀 Ready to Launch (即応銘柄) 総合 TOP 5", hint: "優先順位: 最新発射台 ➔ 定着 ➔ 成長率", 
