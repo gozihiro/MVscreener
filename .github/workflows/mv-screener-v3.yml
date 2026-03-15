@@ -2,15 +2,14 @@ name: Minervini Screener V3 (Ready to Launch)
 
 on:
   schedule:
-    # UTC 22:05 (月〜金) 実行 ＝ 日本時間 07:05 (火〜土) 実行
-    # 米国市場の月〜金クローズをカバーします
-    - cron: '5 22 * * 1-5'
+    # 日本時間 15:00 (月〜土) 実行 ＝ UTC 06:00 (月〜土) 実行
+    - cron: '0 6 * * 1-6'
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 360 # 5.5時間の完走を許容する設定
+    timeout-minutes: 360
 
     steps:
       - name: Checkout code
@@ -31,5 +30,4 @@ jobs:
           CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
           REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
-        # 発射台スコア計算機能を持つ V3 スクリプトを実行
         run: python screener_v3.py
