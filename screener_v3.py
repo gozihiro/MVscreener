@@ -190,7 +190,8 @@ def get_jp_market_summary(adv=0, dec=0, ad_ratio=0.0):
         elif dist_days >= 4 or ad_ratio < 0.8: status = "🔶 上昇負担 (Uptrend Under Pressure)"
         else: status = "🚀 上昇確認 (Confirmed Uptrend)"
 
-        return f"JP_METADATA,{status} | A/D比:{ad_ratio} (↑{adv} ↓{dec}) | 売り抜け:{dist_days}日"
+        summary_str = f"JP_METADATA,{status} | A/D比:{ad_ratio} (↑{adv} ↓{dec}) | 売り抜け:{dist_days}日"
+        return summary_str
     except Exception as e:
         return f"JP_METADATA,解析エラー:{str(e)}"
 
@@ -245,6 +246,7 @@ def run_screener():
                     if ticker.endswith('.T'):
                         if is_up: jp_advances += 1
                         else: jp_declines += 1
+                        # 日本株はAD比カウントのみ行い、以下の詳細スクリーニングには進まない
                         continue 
                     else:
                         if is_up: advances += 1
@@ -292,7 +294,10 @@ def run_screener():
                     if (curr_p > sma20.iloc[-1] > sma50.iloc[-1]):
                         if (curr_p/c.iloc[-40] >= 1.70) and (curr_p/h.iloc[-40:].max() >= 0.75):
                             tags.append("PowerPlay(70%+)")
-                        if (1.10 <= curr_p/c.iloc[-10] <= 1.70) and (curr_p/h.iloc[-10:].max() >= 0.90):
+                        
+                        # 【修正】ハイベース判定：4週間(20日)の終値が10%以内のレンジに収束
+                        c_flag = c.tail(20)
+                        if (1.10 <= curr_p/c.iloc[-20] <= 1.70) and (c_flag.max() / c_flag.min() <= 1.10):
                             if (c.iloc[-5:].pct_change() >= 0.10).any() and (v.iloc[-3:] < vol_sma50.iloc[-3:]).all():
                                 tags.append("High-Base(Strict)")
                             else:
