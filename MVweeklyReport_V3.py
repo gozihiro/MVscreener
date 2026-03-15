@@ -390,11 +390,9 @@ def create_intelligence_report(df, acc_data=[]):
                         hint: "優先順位: 最新発射台 ➔ 定着日数 ➔ 低リスク(Risk%)", 
                         data: analyzed.filter(x => x.pattern.includes('Micro-VCP'))
                                       .sort((a, b) => {{
-                                          // 1. 発射台スコア (降順)
                                           if (b.latestLaunchpad !== a.latestLaunchpad) {{
                                               return b.latestLaunchpad - a.latestLaunchpad;
                                           }}
-                                          // 2. 定着日数 (降順)
                                           return b.persistence - a.persistence;
                                       }}) 
                     }},
@@ -411,9 +409,9 @@ def create_intelligence_report(df, acc_data=[]):
                     {{ title: "⚡ PowerPlay [Category TOP 5]", hint: "品質不問 | 優先順位: 期間騰落率 ➔ 定着日数", 
                         data: analyzed.filter(x => x.pattern.includes('PowerPlay')).sort(getSorter(['change','persistence'], [-1,-1])).slice(0,5) }},
                     {{ title: "📐 High-Base(Strict) [Quality Validated]", hint: "品質タグ合格銘柄 (すべて表示) | 順位: 定着日数 ➔ 最新発射台", 
-                        data: analyzed.filter(x => x.pattern.includes('High-Base(Strict)') && (x.isTrendOk || x.isStrictVcp)).sort(getSorter(['persistence','latestLaunchpad'], [-1,-1])) }},
+                        data: analyzed.filter(x => x.pattern.includes('High-Base(Strict')).sort(getSorter(['persistence','latestLaunchpad'], [-1,-1])) }},
                     {{ title: "📐 High-Base(Strict) [Category TOP 5]", hint: "品質不問 | 優先順位: 定着日数 ➔ 最新発射台", 
-                        data: analyzed.filter(x => x.pattern.includes('High-Base(Strict)')).sort(getSorter(['persistence','latestLaunchpad'], [-1,-1])).slice(0,5) }},
+                        data: analyzed.filter(x => x.pattern.includes('High-Base(Strict')).sort(getSorter(['persistence','latestLaunchpad'], [-1,-1])).slice(0,5) }},
                     {{ title: "📐 High-Base [Quality Validated]", hint: "品質タグ合格銘柄 (すべて表示) | 順位: 定着日数 ➔ 最新発射台", 
                         data: analyzed.filter(x => x.pattern.includes('High-Base') && !x.pattern.includes('Strict') && (x.isTrendOk || x.isStrictVcp)).sort(getSorter(['persistence','latestLaunchpad'], [-1,-1])) }},
                     {{ title: "📐 High-Base [Category TOP 5]", hint: "品質不問 | 優先順位: 定着日数 ➔ 最新発射台", 
@@ -450,7 +448,7 @@ def create_intelligence_report(df, acc_data=[]):
                 }});
                 document.getElementById('dynamic-rankings-area').innerHTML = html;
 
-                // --- チャート描画 (同期ラベル同期) ---
+                // --- チャート描画 ---
                 const historyLabels = data.history.labels;
                 const usAdValues = historyLabels.map(label => {{
                     const m = data.market.find(m => m.date === label);
