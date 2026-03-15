@@ -166,7 +166,7 @@ def get_jp_full_universe():
         return []
 
 def get_jp_market_summary(adv=0, dec=0, ad_ratio=0.0):
-    """日本市場の環境解析（指数判定）"""
+    """日本市場の環境解析（1321.Tによる指数判定。A/D比はメインループから受け取る）"""
     log(">> ステップ1.2: 日本市場の解析開始...")
     try:
         # 1. 指数データ取得
@@ -190,8 +190,7 @@ def get_jp_market_summary(adv=0, dec=0, ad_ratio=0.0):
         elif dist_days >= 4 or ad_ratio < 0.8: status = "🔶 上昇負担 (Uptrend Under Pressure)"
         else: status = "🚀 上昇確認 (Confirmed Uptrend)"
 
-        summary_str = f"JP_METADATA,{status} | A/D比:{ad_ratio} (↑{adv} ↓{dec}) | 売り抜け:{dist_days}日"
-        return summary_str
+        return f"JP_METADATA,{status} | A/D比:{ad_ratio} (↑{adv} ↓{dec}) | 売り抜け:{dist_days}日"
     except Exception as e:
         return f"JP_METADATA,解析エラー:{str(e)}"
 
@@ -223,9 +222,9 @@ def run_screener():
 
     if not universe: return
 
+    results = []
     advances, declines = 0, 0
     jp_advances, jp_declines = 0, 0
-    results = []
     total = len(universe)
 
     for i in range(0, total, BATCH_SIZE):
@@ -241,12 +240,11 @@ def run_screener():
                     df = data.xs(ticker, axis=1, level=1).dropna()
                     if len(df) < 252: continue
                     
-                    # A/Dカウンター (US/JP分離)
+                    # A/Dカウンター
                     is_up = df['Close'].iloc[-1] > df['Close'].iloc[-2]
                     if ticker.endswith('.T'):
                         if is_up: jp_advances += 1
                         else: jp_declines += 1
-                        # 日本株はAD比カウントのみで終了し、詳細分析（米国株用）へは進まない
                         continue 
                     else:
                         if is_up: advances += 1
@@ -300,11 +298,31 @@ def run_screener():
                             else:
                                 tags.append("High-Base")
 
+                    # --- C. Micro-VCP (3-Day Silence) ---
+                    p1, p2, p3 = df.iloc[-2], df.iloc[-3], df.iloc[-4]
+                    # Micro-VCP用のトレンドテンプレート（点データを使用）
+                    is_micro_stage2 = (
+                        curr_p > sma150.iloc[-1] and sma150.iloc[-1] > sma200.iloc[-1] and
+                        sma200.iloc[-1] > sma200.iloc[-20] and curr_p > sma50.iloc[-1] and
+                        curr_p > low_52w * 1.25 and curr_p > high_52w * 0.75
+                    )
+                    if is_micro_stage2:
+                        day1_rebound = p3['Close'] > p3['Open']
+                        atr_val = (h - l).rolling(14).mean().iloc[-3]
+                        day2_range = p2['High'] - p2['Low']
+                        day2_shakeout = (p2['Close'] < p2['Open']) and (day2_range > atr_val)
+                        day3_range = p1['High'] - p1['Low']
+                        is_quiet = (day3_range < day2_range * 0.6 and p1['Volume'] < p2['Volume'] * 0.7 and p1['Volume'] < vol_sma50.iloc[-1])
+                        is_tight_candle = abs(p1['Close'] - p1['Open']) < day3_range * 0.5
+                        
+                        if day1_rebound and day2_shakeout and is_quiet and is_tight_candle:
+                            risk_pct = ((p1['High'] - p1['Low']) / p1['High']) * 100
+                            tags.append(f"Micro-VCP(T:{p1['High']:.2f}/S:{p1['Low']:.2f}/R:{risk_pct:.1f}%)")
+
                     if tags:
                         if template_ok: tags.append("[Trend_OK]")
                         if vcp_strict_ok: tags.append("VCP_3Steps_Validated")
 
-                        # 発射台スコアの算出 (米国株のみなので一律 index_change でOK)
                         lp_score = calculate_launchpad_score(df, ticker, tags, index_change)
                         
                         stock = yf.Ticker(ticker)
