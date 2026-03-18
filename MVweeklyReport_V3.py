@@ -395,7 +395,13 @@ def create_intelligence_report(df, acc_data=[]):
                                           }}
                                           return b.persistence - a.persistence;
                                       }}) 
-                    }},
+                    },
+                    { 
+                        title: "🚀 MA Squeeze (REEDスタイル)", 
+                        hint: "10/20/50線が収束から上方拡散を開始した銘柄", 
+                        data: analyzed.filter(x => x.pattern.includes('MA_Squeeze'))
+                                      .sort((a, b) => b.latestLaunchpad - a.latestLaunchpad) 
+                    },
                     {{ title: "🏆 Super Performance (全条件合格)", hint: "優先順位: 最新スコア ➔ 定着日数", 
                         data: analyzed.filter(x => x.isTrendOk && x.isStrictVcp).sort(getSorter(['latestLaunchpad','persistence'], [-1,-1])).slice(0,10) }},
                     {{ title: "🚀 Ready to Launch (即応銘柄) 総合 TOP 5", hint: "優先順位: 最新発射台 ➔ 定着 ➔ 成長率", 
