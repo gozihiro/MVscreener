@@ -297,7 +297,7 @@ def run_screener():
                         
                         # 【修正】ハイベース判定：3-6週間(15-30日)の間、現在まで継続して終値が10%以内であるか
                         tight_duration = 0
-                        for d_idx in range(1, 31):
+                        for d_idx in range(1, 41): # 6週(30日)を超える銘柄を正確に除外するため40日までカウント
                             if len(c) < d_idx: break
                             win = c.tail(d_idx)
                             if (win.max() / win.min() <= 1.10): tight_duration = d_idx
@@ -329,6 +329,14 @@ def run_screener():
                         if day1_rebound and day2_shakeout and is_quiet and is_tight_candle:
                             risk_pct = ((p1['High'] - p1['Low']) / p1['High']) * 100
                             tags.append(f"Micro-VCP(T:{p1['High']:.2f}/S:{p1['Low']:.2f}/R:{risk_pct:.1f}%)")
+
+                    # --- D. MovingAverage Squeeze (REED Style) ---
+                    ema10 = c.ewm(span=10, adjust=False).mean()
+                    ma10, ma20, ma50_v = ema10.iloc[-1], sma20.iloc[-1], sma50.iloc[-1]
+                    ma_list = [ma10, ma20, ma50_v]
+                    is_squeezed = (max(ma_list) / min(ma_list) <= 1.015)
+                    if is_squeezed and curr_p > max(ma_list) and ema10.iloc[-1] > ema10.iloc[-2]:
+                        tags.append("MA_Squeeze(REED)")
 
                     if tags:
                         if template_ok: tags.append("[Trend_OK]")
