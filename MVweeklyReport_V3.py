@@ -309,7 +309,7 @@ def create_intelligence_report(df, acc_data=[]):
                     </div>
                 `;
 
-                // Accumulation Ranking (Unchanged)
+                // Accumulation Ranking
                 let accHtml = '<div class="card"><h2 style="margin-top:0;">💎 Accumulation Survival Ranking</h2>';
                 const accTiers = [
                     {{ label: "🔥 熟成 (10日以上)", filter: d => d.persistence >= 10 }},
@@ -396,7 +396,7 @@ def create_intelligence_report(df, acc_data=[]):
                                           return b.persistence - a.persistence;
                                       }}) 
                     },
-                    { 
+                    {{ 
                         title: "🚀 MA Squeeze (REEDスタイル)", 
                         hint: "10/20/50線が収束から上方拡散を開始した銘柄", 
                         data: analyzed.filter(x => x.pattern.includes('MA_Squeeze'))
