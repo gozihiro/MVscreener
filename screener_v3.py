@@ -20,8 +20,8 @@ BATCH_SLEEP_BASE = 85
 def log(msg):
     print(msg, flush=True)
 
+# screener_v3.py の upload_to_drive 関数を以下に差し替え
 def upload_to_drive(file_path, drive_file_name):
-    """OAuth 2.0を使用してGoogle Driveへアップロード"""
     client_id = os.environ.get('CLIENT_ID')
     client_secret = os.environ.get('CLIENT_SECRET')
     refresh_token = os.environ.get('REFRESH_TOKEN')
@@ -37,13 +37,25 @@ def upload_to_drive(file_path, drive_file_name):
             client_secret=client_secret, token_uri="https://oauth2.googleapis.com/token"
         )
         service = build('drive', 'v3', credentials=creds)
-        file_metadata = {'name': drive_file_name, 'parents': [folder_id]}
+        
+        # 既存ファイルを検索
+        query = f"'{folder_id}' in parents and name = '{drive_file_name}' and trashed = false"
+        res = service.files().list(q=query, fields="files(id)").execute()
+        files = res.get('files', [])
+        
         media = MediaFileUpload(file_path, mimetype='text/csv', resumable=True)
-        service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-        log(f">> ✅ Driveアップロード成功: {drive_file_name}")
+        
+        if files:
+            # 存在すれば更新
+            service.files().update(fileId=files[0]['id'], media_body=media).execute()
+            log(f">> ✅ Driveファイルを更新: {drive_file_name}")
+        else:
+            # なければ新規作成
+            file_metadata = {'name': drive_file_name, 'parents': [folder_id]}
+            service.files().create(body=file_metadata, media_body=media).execute()
+            log(f">> ✅ Driveファイルを新規作成: {drive_file_name}")
     except Exception as e:
         log(f">> ❌ Driveアップロード失敗: {e}")
-
 def calculate_launchpad_score(df, ticker, tags, index_change):
     """
     ミネルヴィニ/エルダー流『発射台スコア』算出 (0-10点)
