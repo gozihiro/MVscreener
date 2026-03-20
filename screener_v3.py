@@ -297,7 +297,7 @@ def run_screener():
                         
                         # 【修正】ハイベース判定：3-6週間(15-30日)の間、現在まで継続して終値が10%以内であるか
                         tight_duration = 0
-                        for d_idx in range(1, 41): # 6週(30日)を超える銘柄を正確に除外するため40日までカウント
+                        for d_idx in range(1, 41): 
                             if len(c) < d_idx: break
                             win = c.tail(d_idx)
                             if (win.max() / win.min() <= 1.10): tight_duration = d_idx
@@ -330,13 +330,28 @@ def run_screener():
                             risk_pct = ((p1['High'] - p1['Low']) / p1['High']) * 100
                             tags.append(f"Micro-VCP(T:{p1['High']:.2f}/S:{p1['Low']:.2f}/R:{risk_pct:.1f}%)")
 
-                    # --- D. MovingAverage Squeeze (REED Style) ---
+                    # --- D. MovingAverage Squeeze (REED Style: 2週間のセットアップ + 動的スロープ判定) ---
                     ema10 = c.ewm(span=10, adjust=False).mean()
-                    ma10, ma20, ma50_v = ema10.iloc[-1], sma20.iloc[-1], sma50.iloc[-1]
-                    ma_list = [ma10, ma20, ma50_v]
-                    is_squeezed = (max(ma_list) / min(ma_list) <= 1.015)
-                    if is_squeezed and curr_p > max(ma_list) and ema10.iloc[-1] > ema10.iloc[-2]:
-                        tags.append("MA_Squeeze(REED)")
+                    
+                    # 1. セットアップ確認：過去10日間（2週間）で1.5%以内の密集があったか
+                    squeeze_history = []
+                    for d_back in range(1, 11):
+                        if len(c) < d_back: break
+                        m_val = [ema10.iloc[-d_back], sma20.iloc[-d_back], sma50.iloc[-d_back]]
+                        squeeze_history.append(max(m_val) / min(m_val))
+                    
+                    was_squeezed = any(val <= 1.015 for val in squeeze_history)
+
+                    # 2. 現在のトリガー：どのMAが上向いているかを確認
+                    up_mas = []
+                    if ema10.iloc[-1] > ema10.iloc[-2]: up_mas.append("10E")
+                    if sma20.iloc[-1] > sma20.iloc[-2]: up_mas.append("20S")
+                    if sma50.iloc[-1] > sma50.iloc[-2]: up_mas.append("50S")
+
+                    # 3. 条件合致：過去2週間に密集があり、かつ今日どれか一つでもMAが上向いて価格が上にある場合
+                    if was_squeezed and curr_p > max([ema10.iloc[-1], sma20.iloc[-1], sma50.iloc[-1]]) and up_mas:
+                        up_label = "/".join(up_mas)
+                        tags.append(f"MA_Squeeze(REED:{up_label}↑)")
 
                     if tags:
                         if template_ok: tags.append("[Trend_OK]")
@@ -350,7 +365,7 @@ def run_screener():
                         if 0 < mkt_cap <= 100 * 1e9:
                             rev_g, eps_g = info.get('revenueGrowth'), info.get('earningsGrowth')
                             op_cf = info.get('operatingCashflow')
-                            ema10_val = c.ewm(span=10, adjust=False).mean().iloc[-1]
+                            ema10_val = ema10.iloc[-1]
                             
                             f_label = "【超優秀】クリア" if (rev_g or 0) >= 0.25 and (eps_g or 0) >= 0.25 else "【良好】一部" if (rev_g or 0) >= 0.25 or (eps_g or 0) >= 0.25 else "【不足】低成長"
                             
