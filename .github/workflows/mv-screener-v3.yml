@@ -2,8 +2,10 @@ name: Minervini Screener V3 (Ready to Launch)
 
 on:
   schedule:
-    # 日本時間 15:00 (月〜土) 実行 ＝ UTC 06:00 (月〜土) 実行
-    - cron: '0 6 * * 1-6'
+    # 1回目: 日本時間 07:00 (UTC 22:00 前日) - 米国市場最新
+    - cron: '0 22 * * 0-5' 
+    # 2回目: 日本時間 15:30 (UTC 06:30) - 日本市場最新
+    - cron: '30 6 * * 1-6'
   workflow_dispatch:
 
 jobs:
