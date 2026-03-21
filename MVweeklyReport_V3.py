@@ -197,6 +197,12 @@ def create_intelligence_report(df, acc_data=[]):
         <style>
             body {{ font-family: 'Segoe UI', system-ui, sans-serif; background: #f0f4f8; margin: 0; padding: 20px; color: #2c3e50; }}
             .container {{ max-width: 1200px; margin: auto; }}
+            /* 修正: 目次(ナビゲーションバー)のスタイル追加 */
+            .nav-bar {{ background: #1a2a3a; padding: 15px; border-radius: 12px; margin-bottom: 25px; position: sticky; top: 10px; z-index: 1000; box-shadow: 0 4px 15px rgba(0,0,0,0.2); display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }}
+            /* 修正: 目次リンクのスタイル追加 */
+            .nav-bar a {{ color: #ecf0f1; text-decoration: none; font-weight: bold; font-size: 0.85em; padding: 6px 12px; border-radius: 6px; background: #34495e; transition: 0.3s; }}
+            /* 修正: 目次リンクのホバー時スタイル追加 */
+            .nav-bar a:hover {{ background: #3498db; }}
             .control-panel {{ background: #1a2a3a; color: white; padding: 25px; border-radius: 15px; display: flex; align-items: center; gap: 30px; margin-bottom: 30px; position: sticky; top: 10px; z-index: 1000; box-shadow: 0 8px 20px rgba(0,0,0,0.15); }}
             .date-input {{ background: #2c3e50; border: 1px solid #455a64; color: white; padding: 10px; border-radius: 8px; font-size: 1em; cursor: pointer; }}
             .card {{ background: white; border-radius: 20px; padding: 30px; margin-bottom: 30px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); border-top: 6px solid #3498db; }}
@@ -235,11 +241,21 @@ def create_intelligence_report(df, acc_data=[]):
     <body>
         <div class="container">
             <h1>📊 戦略的銘柄解析インテリジェンス V3</h1>
+            <div class="nav-bar">
+                <a href="#sec-market">🌍 市場環境</a>
+                <a href="#sec-acc">💎 Accumulation</a>
+                <a href="#sec-trend">🚀 トレンド転換</a>
+                <a href="#sec-start">🌱 拡散初期</a>
+                <a href="#sec-micro">⚡ Micro-VCP</a>
+                <a href="#sec-hb">📐 High-Base</a>
+                <a href="#sec-vcp">📈 VCP</a>
+                <a href="#sec-scatter">📊 分散分析</a>
+            </div>
             <div class="control-panel">
                 <div>📅 <b>分析開始日を選択:</b> <input type="date" id="start-date-picker" class="date-input" onchange="handleDateChange()"></div>
                 <div id="period-info"></div>
             </div>
-            <div class="card">
+            <div class="card" id="sec-market">
                 <h2 style="margin-top:0;">🌍 市場環境の変遷 (Fact-Check)</h2>
                 <div class="market-grid" id="market-stats"></div>
                 <div style="display:flex; gap:10px; margin-top:20px;">
@@ -254,7 +270,7 @@ def create_intelligence_report(df, acc_data=[]):
             </div>
             <div id="accumulation-ranking-area"></div>
             <div id="dynamic-rankings-area"></div>
-            <div class="card">
+            <div class="card" id="sec-scatter">
                 <h2 style="margin-top:0;">📈 銘柄収束解析（出現日数 vs 騰落率）</h2>
                 <div id="chart-scatter" style="height:600px;"></div>
                 <div class="explanation-box">
@@ -310,7 +326,8 @@ def create_intelligence_report(df, acc_data=[]):
                 `;
 
                 // Accumulation Ranking
-                let accHtml = '<div class="card"><h2 style="margin-top:0;">💎 Accumulation Survival Ranking</h2>';
+                /* 修正: Accumulationセクションに目次用IDを追加 */
+                let accHtml = '<div class="card" id="sec-acc"><h2 style="margin-top:0;">💎 Accumulation Survival Ranking</h2>';
                 const accTiers = [
                     {{ label: "🔥 熟成 (10日以上)", filter: d => d.persistence >= 10 }},
                     {{ label: "✅ 確立 (5〜9日)", filter: d => d.persistence >= 5 && d.persistence <= 9 }},
@@ -328,13 +345,18 @@ def create_intelligence_report(df, acc_data=[]):
                 }});
                 document.getElementById('accumulation-ranking-area').innerHTML = accHtml + '</div>';
 
-                const analyzed = data.stocks.map(s => {{
+                /* 修正: analyzed定数のマッピング処理内で、騰落率およびフィルタリング条件を追加 */
+                const analyzedRaw = data.stocks.map(s => {{
                     const pricesInPeriod = targetDates.map(d => s.prices[d]).filter(p => p !== null);
                     if (pricesInPeriod.length < 1) return null;
                     const persistence = pricesInPeriod.length;
                     const change = pricesInPeriod.length >= 2 ? ((pricesInPeriod[persistence - 1] / pricesInPeriod[0]) - 1) * 100 : 0;
                     const vol = pricesInPeriod.length >= 2 ? ((Math.max(...pricesInPeriod) - Math.min(...pricesInPeriod)) / Math.min(...pricesInPeriod)) * 100 : 0;
                     const latestLaunchpad = s.launchpads[latestDate] || 0;
+                    /* 修正: 当日騰落率(dailyChange)の算出を追加 */
+                    const pLatest = s.prices[latestDate];
+                    const pPrev = targetDates.length >= 2 ? s.prices[targetDates[targetDates.length - 2]] : pLatest;
+                    const dailyChange = (pLatest && pPrev) ? ((pLatest / pPrev) - 1) * 100 : 0;
 
                     let stealthScore = 0;
                     if (pricesInPeriod.length >= 6) {{
@@ -373,8 +395,15 @@ def create_intelligence_report(df, acc_data=[]):
                         if (s.launchpads[d] > launchpad) launchpad = s.launchpads[d];
                         if (pattern === "－" && s.patterns[d] && s.patterns[d] !== "－") pattern = s.patterns[d];
                     }}
-                    return {{ ticker: s.ticker, persistence, change, vol, growth, pattern, launchpad, latestLaunchpad, stealthScore, momentumStealthScore, isTrendOk, isStrictVcp }};
+                    /* 修正: returnオブジェクトにdailyChangeを追加 */
+                    return {{ ticker: s.ticker, persistence, change, vol, growth, pattern, launchpad, latestLaunchpad, stealthScore, momentumStealthScore, isTrendOk, isStrictVcp, dailyChange }};
                 }}).filter(x => x !== null);
+
+                /* 修正: MA Squeezeパターンかつ上昇率0.8%未満の銘柄をリストから除外 */
+                const analyzed = analyzedRaw.filter(x => {{
+                    if (x.pattern.includes('MA_Squeeze') && x.dailyChange < 0.8) return false;
+                    return true;
+                }});
 
                 const getSorter = (keys, orders) => (a, b) => {{
                     for(let i=0; i<keys.length; i++) {{
@@ -387,6 +416,7 @@ def create_intelligence_report(df, acc_data=[]):
                 const sections = [
                     {{ 
                         title: "🎯 Micro-VCP (静寂からのブレイク準備)", 
+                        id: "sec-micro", /* 修正: 目次用IDを追加 */
                         hint: "優先順位: 最新発射台 ➔ 定着日数 ➔ 低リスク(Risk%)", 
                         data: analyzed.filter(x => x.pattern.includes('Micro-VCP'))
                                       .sort((a, b) => {{
@@ -397,12 +427,20 @@ def create_intelligence_report(df, acc_data=[]):
                                       }}) 
                     }},
                     {{ 
-                        title: "🚀 MA Squeeze (REEDスタイル)", 
-                        hint: "10/20/50線が収束から上方拡散を開始した銘柄", 
-                        data: analyzed.filter(x => x.pattern.includes('MA_Squeeze'))
+                        title: "🚀 MA Squeeze (トレンド転換: 50SMA同調)", /* 修正: REEDスタイルをトレンド転換に細分化 */
+                        id: "sec-trend", /* 修正: 目次用IDを追加 */
+                        hint: "10/20/50線がすべて上向き、収束から上方拡散を開始した銘柄", 
+                        data: analyzed.filter(x => x.pattern.includes('MA_Squeeze') && x.pattern.includes('10E/20S/50S↑'))
                                       .sort((a, b) => b.latestLaunchpad - a.latestLaunchpad) 
                     }},
-                    {{ title: "🏆 Super Performance (全条件合格)", hint: "優先順位: 最新スコア ➔ 定着日数", 
+                    {{ 
+                        title: "🌱 MA Squeeze (拡散初期: 10EMA先行)", /* 修正: REEDスタイルを拡散初期に細分化 */
+                        id: "sec-start", /* 修正: 目次用IDを追加 */
+                        hint: "10EMAが反発し、収束からの離脱が始まった銘柄", 
+                        data: analyzed.filter(x => x.pattern.includes('MA_Squeeze') && x.pattern.includes('10E↑') && !x.pattern.includes('50S↑'))
+                                      .sort((a, b) => b.latestLaunchpad - a.latestLaunchpad) 
+                    }},
+                    {{ title: "🏆 Super Performance (全条件合格)", id: "sec-vcp", /* 修正: 目次用IDを追加(VCP系と統合) */ hint: "優先順位: 最新スコア ➔ 定着日数", 
                         data: analyzed.filter(x => x.isTrendOk && x.isStrictVcp).sort(getSorter(['latestLaunchpad','persistence'], [-1,-1])).slice(0,10) }},
                     {{ title: "🚀 Ready to Launch (即応銘柄) 総合 TOP 5", hint: "優先順位: 最新発射台 ➔ 定着 ➔ 成長率", 
                         data: analyzed.filter(x => x.latestLaunchpad > 0).sort(getSorter(['latestLaunchpad','persistence','growth'], [-1,-1,-1])).slice(0,5) }},
@@ -414,7 +452,7 @@ def create_intelligence_report(df, acc_data=[]):
                         data: analyzed.filter(x => x.pattern.includes('PowerPlay') && (x.isTrendOk || x.isStrictVcp)).sort(getSorter(['persistence','change'], [-1,-1])) }},
                     {{ title: "⚡ PowerPlay [Category TOP 5]", hint: "品質不問 | 優先順位: 期間騰落率 ➔ 定着日数", 
                         data: analyzed.filter(x => x.pattern.includes('PowerPlay')).sort(getSorter(['change','persistence'], [-1,-1])).slice(0,5) }},
-                    {{ title: "📐 High-Base(Strict) [Quality Validated]", hint: "品質タグ合格銘柄 (すべて表示) | 順位: 定着日数 ➔ 最新発射台", 
+                    {{ title: "📐 High-Base(Strict) [Quality Validated]", id: "sec-hb", /* 修正: 目次用IDを追加 */ hint: "品質タグ合格銘柄 (すべて表示) | 順位: 定着日数 ➔ 最新発射台", 
                         data: analyzed.filter(x => x.pattern.includes('High-Base(Strict')).sort(getSorter(['persistence','latestLaunchpad'], [-1,-1])) }},
                     {{ title: "📐 High-Base(Strict) [Category TOP 5]", hint: "品質不問 | 優先順位: 定着日数 ➔ 最新発射台", 
                         data: analyzed.filter(x => x.pattern.includes('High-Base(Strict')).sort(getSorter(['persistence','latestLaunchpad'], [-1,-1])).slice(0,5) }},
@@ -432,15 +470,18 @@ def create_intelligence_report(df, acc_data=[]):
 
                 let html = "";
                 sections.forEach(sec => {{
-                    html += `<div class="card"><h2 class="section-title">${{sec.title}}</h2><p class="priority-hint">${{sec.hint}}</p><div class="rank-grid">`;
+                    /* 修正: card要素に目次用ID(sec.id)を反映。また、騰落率表示を各カードに追加 */
+                    html += `<div class="card" id="${{sec.id || ''}}"><h2 class="section-title">${{sec.title}}</h2><p class="priority-hint">${{sec.hint}}</p><div class="rank-grid">`;
                     if (sec.data.length === 0) html += "<p>対象なし</p>";
                     sec.data.forEach((s, idx) => {{
+                        const cClass = s.dailyChange >= 0 ? 'change-up' : 'change-down'; /* 修正: 騰落率に応じたクラス判定 */
                         const badges = (s.isTrendOk ? '<span class="q-badge q-trend">Trend_OK</span>' : '') + (s.isStrictVcp ? '<span class="q-badge q-strict">VCP_Strict</span>' : '');
                         html += `
                         <div class="rank-card">
                             <div class="rank-badge">${{idx+1}}</div>
                             <span class="persistence-tag">${{s.persistence}}日出現</span>
                             <h3 style="margin:5px 0;">${{s.ticker}}</h3>
+                            <div style="font-size: 0.9em; margin-bottom: 5px;"><span class="${{cClass}}" style="font-weight:bold; padding:2px 4px; border-radius:4px;">${{s.dailyChange >= 0 ? '+' : ''}}${{s.dailyChange.toFixed(1)}}% (Today)</span></div>
                             <div class="quality-badges">${{badges}}</div>
                             <div class="metric-box">
                                 <div class="metric-row"><span>${{sec.title.includes('Stealth') ? '隠密Score' : '発射台Score'}}</span> <b class="score-highlight">${{s.momentumStealthScore || s.stealthScore || s.latestLaunchpad}}</b></div>
