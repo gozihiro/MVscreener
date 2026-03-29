@@ -12,6 +12,7 @@ from linebot.v3.messaging import (
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 import functions_framework
 import pandas as pd
+import yfinance as yf
 
 # [修正] Google Drive API 認可ライブラリを MVweeklyReport_V3.py と同期
 from googleapiclient.discovery import build
@@ -90,7 +91,6 @@ def callback(request):
         
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
-    import yfinance as yf # [遅延インポート]
     user_text = event.message.text.strip()
     reply_text = ""
     
