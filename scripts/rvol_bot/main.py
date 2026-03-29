@@ -4,6 +4,11 @@ import pandas as pd
 import json
 import random
 import re
+import io
+from flask import Request, abort
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
+from google.oauth2 import service_account
 from datetime import datetime
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -17,6 +22,11 @@ import functions_framework
 # 環境変数から取得
 access_token = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 channel_secret = os.environ.get('LINE_CHANNEL_SECRET')
+
+# MVweeklyReport_V3.py と同様にJSON文字列として環境変数から取得
+creds_json = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
+# 保存先フォルダID (MVweeklyReport_V3.py の SUMMARY_FOLDER_ID を参照)
+DRIVE_FOLDER_ID = "1OEtqUG8UZwnMDWpKxJaE4gXP0TqkQbMO"
 
 configuration = Configuration(access_token=access_token)
 handler = WebhookHandler(channel_secret)
@@ -33,12 +43,107 @@ def callback(request):
 
     return 'OK'
 
+def get_drive_service():
+    """Google Drive API クライアントの初期化 (MVweeklyReport_V3.py 流用)"""
+    if not creds_json:
+        return None
+    
+    scopes = ['https://www.googleapis.com/auth/drive.file']
+    try:
+        creds_dict = json.loads(creds_json)
+        creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        return build('drive', 'v3', credentials=creds)
+    except Exception as e:
+        print(f"Drive Auth Error: {e}")
+        return None
+
+def normalize_date(date_str):
+    """
+    YYYY/MM/DD, YYYY/M/D, YYYY-MM-DD などの形式を YYYY-MM-DD に正規化する
+    """
+    try:
+        # スラッシュをハイフンに置換してから pandas で変換
+        return pd.to_datetime(date_str.replace('/', '-')).strftime('%Y-%m-%d')
+    except Exception:
+        return None
+
+def upload_df_to_drive(df, file_name, folder_id):
+    """DataFrameをCSVとしてDriveに直接アップロード"""
+    service = get_drive_service()
+    if not service:
+        return False
+    
+    try:
+        # メモリ上でCSVを作成
+        csv_buffer = io.StringIO()
+        df.to_csv(csv_buffer)
+        csv_buffer.seek(0)
+        
+        file_metadata = {
+            'name': file_name,
+            'parents': [folder_id]
+        }
+        
+        # StringIOの内容をバイナリストリームに変換してアップロード
+        media = MediaIoBaseUpload(
+            io.BytesIO(csv_buffer.getvalue().encode('utf-8')),
+            mimetype='text/csv',
+            resumable=True
+        )
+        
+        file = service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields='id'
+        ).execute()
+        
+        print(f"File ID: {file.get('id')} uploaded to Drive.")
+        return True
+    except Exception as e:
+        print(f"Upload failed: {e}")
+        return False
+
+def handle_save_command(text):
+    """SAVEコマンドの解析と実行（日付形式の柔軟な処理付き）"""
+    try:
+        parts = text.split()
+        if len(parts) < 4:
+            return "⚠️ 形式が正しくありません。\n例: SAVE AAPL 2026/3/1 2026/3/31"
+        
+        ticker = parts[1].upper()
+        # 日付の正規化
+        start = normalize_date(parts[2])
+        end = normalize_date(parts[3])
+        
+        if not start or not end:
+            return "❌ 日付形式が不正です。2026/03/01 または 2026/3/1 の形式で入力してください。"
+        
+        # yfinance で取得
+        df = yf.download(ticker, start=start, end=end, progress=False)
+        
+        if df.empty:
+            return f"❌ {ticker} ({start}〜{end}) のデータが見つかりませんでした。"
+        
+        file_name = f"{ticker}_history_{start}_{end}.csv"
+        success = upload_df_to_drive(df, file_name, DRIVE_FOLDER_ID)
+        
+        if success:
+            return f"✅ {ticker} を保存しました。\n期間: {start} 〜 {end}\nファイル: {file_name}"
+        else:
+            return "❌ Google Driveへの保存に失敗しました。"
+            
+    except Exception as e:
+        return f"❌ システムエラー: {str(e)}"
+        
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
     user_text = event.message.text.strip()
+    reply_text = ""
     
     # 「Market」入力判定 (大文字小文字を区別しない)
-    if user_text.lower() == "market":
+    if user_text.upper().startswith("SAVE"):
+        reply_text = handle_save_command(user_text)
+    elif user_text.lower() == "market":
         reply_text = get_market_intelligence_report()
     else:
         # 銘柄名として処理
