@@ -1,7 +1,7 @@
 import os
 import io
 import json
-# [修正] 起動高速化（タイムアウト対策）のため、pandas, yfinance のインポートを関数内へ移動
+# [修正] 起動高速化のため、pandas, yfinance のインポートを関数内へ移動
 from datetime import datetime
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -12,44 +12,54 @@ from linebot.v3.messaging import (
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 import functions_framework
 
-# [追加] SAVE機能用のGoogle APIライブラリ (これらは軽量なためここでインポート)
+# [修正] Google Drive API 認可ライブラリを MVweeklyReport_V3.py と同期
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
-from google.oauth2 import service_account
+from google.oauth2.credentials import Credentials
 
 # 環境変数の取得
 access_token = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 channel_secret = os.environ.get('LINE_CHANNEL_SECRET')
-# [追加] SAVE機能用の認証情報とフォルダID
-creds_json = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
+
+# [修正] 認可情報を MVweeklyReport_V3.py と同一の環境変数から取得
+CLIENT_ID = os.environ.get('CLIENT_ID')
+CLIENT_SECRET = os.environ.get('CLIENT_SECRET')
+REFRESH_TOKEN = os.environ.get('REFRESH_TOKEN')
+# [修正] 保存先を RETROSPECTIVE_FOLDER_ID に変更
 DRIVE_FOLDER_ID = os.environ.get('RETROSPECTIVE_FOLDER_ID', '1IqEghqFq3eM2YyS-6K93U5Zf5_C0Z1kF')
 
 configuration = Configuration(access_token=access_token)
 handler = WebhookHandler(channel_secret)
 
-# --- [新規] SAVEコマンド用ヘルパー関数群 (修正箇所) ---
+# --- [修正] SAVEコマンド用ヘルパー関数群 (MVweeklyReport_V3.py のロジックを転記) ---
 def get_drive_service():
-    """Google Drive API クライアントの初期化"""
-    if not creds_json: return None
-    scopes = ['https://www.googleapis.com/auth/drive.file']
+    """Google Drive API 認可 (MVweeklyReport_V3.py と同期)"""
+    if not REFRESH_TOKEN: return None
     try:
-        creds_dict = json.loads(creds_json)
-        creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        creds = Credentials(
+            token=None,
+            refresh_token=REFRESH_TOKEN,
+            client_id=CLIENT_ID,
+            client_secret=CLIENT_SECRET,
+            token_uri="https://oauth2.googleapis.com/token"
+        )
         return build('drive', 'v3', credentials=creds)
-    except: return None
+    except Exception as e:
+        print(f"Auth Error: {e}")
+        return None
 
 def normalize_date(date_str):
     """YYYY/M/D 等の形式を YYYY-MM-DD に正規化"""
-    import pandas as pd # [遅延インポート]
+    import pandas as pd
     try:
         return pd.to_datetime(date_str.replace('/', '-')).strftime('%Y-%m-%d')
     except: return None
 
 def upload_df_to_drive(df, file_name):
-    """詳細なエラー内容を返すように修正"""
+    """DataFrameをCSVとしてDriveにアップロード"""
     service = get_drive_service()
-    if isinstance(service, str): # エラー文字列が返ってきた場合
-        return service
+    if service is None:
+        return "ERROR: Drive API 認証に失敗しました。環境変数(REFRESH_TOKEN等)を確認してください。"
         
     try:
         csv_buffer = io.StringIO()
