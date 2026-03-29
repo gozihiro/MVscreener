@@ -1,8 +1,7 @@
 import os
 import io
 import json
-import pandas as pd
-import yfinance as yf
+# [修正] 起動高速化（タイムアウト対策）のため、pandas, yfinance のインポートを関数内へ移動
 from datetime import datetime
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -13,23 +12,24 @@ from linebot.v3.messaging import (
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 import functions_framework
 
-# Google Drive API 関連
+# [追加] SAVE機能用のGoogle APIライブラリ (これらは軽量なためここでインポート)
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 from google.oauth2 import service_account
 
-# 環境変数
+# 環境変数の取得
 access_token = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 channel_secret = os.environ.get('LINE_CHANNEL_SECRET')
+# [追加] SAVE機能用の認証情報とフォルダID
 creds_json = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
-# デフォルトのフォルダID
 DRIVE_FOLDER_ID = os.environ.get('DRIVE_FOLDER_ID', '1IqEghqFq3eM2YyS-6K93U5Zf5_C0Z1kF')
 
 configuration = Configuration(access_token=access_token)
 handler = WebhookHandler(channel_secret)
 
-# --- 共通関数 ---
+# --- [新規] SAVEコマンド用ヘルパー関数群 (修正箇所) ---
 def get_drive_service():
+    """Google Drive API クライアントの初期化"""
     if not creds_json: return None
     scopes = ['https://www.googleapis.com/auth/drive.file']
     try:
@@ -39,12 +39,14 @@ def get_drive_service():
     except: return None
 
 def normalize_date(date_str):
-    """YYYY/M/D 等を YYYY-MM-DD に変換"""
+    """YYYY/M/D 等の形式を YYYY-MM-DD に正規化"""
+    import pandas as pd # [遅延インポート]
     try:
         return pd.to_datetime(date_str.replace('/', '-')).strftime('%Y-%m-%d')
     except: return None
 
 def upload_df_to_drive(df, file_name):
+    """DataFrameをCSVとしてDriveにアップロード"""
     service = get_drive_service()
     if not service: return False
     try:
@@ -75,6 +77,7 @@ def handle_message(event):
     
     # 「Market」入力判定 (大文字小文字を区別しない)
     if user_text.upper().startswith("SAVE"):
+        import yfinance as yf # [遅延インポート]
         parts = user_text.split()
         if len(parts) >= 4:
             ticker = parts[1].upper()
@@ -87,11 +90,11 @@ def handle_message(event):
                 if not df.empty:
                     file_name = f"{ticker}_history_{start}_{end}.csv"
                     if upload_df_to_drive(df, file_name):
-                        reply_text = f"✅ {ticker} を保存しました。\n期間: {start} 〜 {end}"
+                        reply_text = f"✅ {ticker} を保存しました。\n期間: {start} 〜 {end}\nファイル: {file_name}"
                     else:
                         reply_text = "❌ Google Driveへの保存に失敗しました。"
                 else:
-                    reply_text = "⚠️ データが見つかりませんでした。"
+                    reply_text = f"⚠️ {ticker} のデータが見つかりませんでした。"
             else:
                 reply_text = "❌ 日付形式が不正です (例: 2026/3/1)。"
         else:
