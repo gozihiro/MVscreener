@@ -11,6 +11,7 @@ from linebot.v3.messaging import (
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 import functions_framework
+import pandas as pd
 
 # [修正] Google Drive API 認可ライブラリを MVweeklyReport_V3.py と同期
 from googleapiclient.discovery import build
@@ -50,7 +51,6 @@ def get_drive_service():
 
 def normalize_date(date_str):
     """YYYY/M/D 等の形式を YYYY-MM-DD に正規化"""
-    import pandas as pd
     try:
         return pd.to_datetime(date_str.replace('/', '-')).strftime('%Y-%m-%d')
     except: return None
@@ -90,12 +90,12 @@ def callback(request):
         
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
+    import yfinance as yf # [遅延インポート]
     user_text = event.message.text.strip()
     reply_text = ""
     
     # 「Market」入力判定 (大文字小文字を区別しない)
     if user_text.upper().startswith("SAVE"):
-        import yfinance as yf # [遅延インポート]
         parts = user_text.split()
         if len(parts) >= 4:
             ticker = parts[1].upper()
