@@ -57,7 +57,8 @@ def upload_df_to_drive(df, file_name):
         media = MediaIoBaseUpload(io.BytesIO(csv_buffer.getvalue().encode('utf-8')), mimetype='text/csv', resumable=True)
         service.files().create(body=file_metadata, media_body=media).execute()
         return True
-    except: return False
+    except Exception as e:
+        return f"Error: {str(e)}"
 
 # --- エントリポイント (Cloud Functions / Cloud Run 用) ---
 @functions_framework.http
