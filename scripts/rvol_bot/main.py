@@ -1,14 +1,8 @@
 import os
-import yfinance as yf
-import pandas as pd
-import json
-import random
-import re
 import io
-from flask import Request, abort
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
-from google.oauth2 import service_account
+import json
+import pandas as pd
+import yfinance as yf
 from datetime import datetime
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -19,121 +13,60 @@ from linebot.v3.messaging import (
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 import functions_framework
 
-# 環境変数から取得
+# Google Drive API 関連
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
+from google.oauth2 import service_account
+
+# 環境変数
 access_token = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 channel_secret = os.environ.get('LINE_CHANNEL_SECRET')
-
-# MVweeklyReport_V3.py と同様にJSON文字列として環境変数から取得
 creds_json = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
-# 保存先フォルダID (MVweeklyReport_V3.py の SUMMARY_FOLDER_ID を参照)
-DRIVE_FOLDER_ID = "1OEtqUG8UZwnMDWpKxJaE4gXP0TqkQbMO"
+# デフォルトのフォルダID
+DRIVE_FOLDER_ID = os.environ.get('DRIVE_FOLDER_ID', '1IqEghqFq3eM2YyS-6K93U5Zf5_C0Z1kF')
 
 configuration = Configuration(access_token=access_token)
 handler = WebhookHandler(channel_secret)
 
-@functions_framework.http
-def callback(request):
-    signature = request.headers.get('X-Line-Signature', '')
-    body = request.get_data(as_text=True)
-
-    try:
-        handler.handle(body, signature)
-    except InvalidSignatureError:
-        return 'Invalid signature', 400
-
-    return 'OK'
-
+# --- 共通関数 ---
 def get_drive_service():
-    """Google Drive API クライアントの初期化 (MVweeklyReport_V3.py 流用)"""
-    if not creds_json:
-        return None
-    
+    if not creds_json: return None
     scopes = ['https://www.googleapis.com/auth/drive.file']
     try:
         creds_dict = json.loads(creds_json)
         creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=scopes)
         return build('drive', 'v3', credentials=creds)
-    except Exception as e:
-        print(f"Drive Auth Error: {e}")
-        return None
+    except: return None
 
 def normalize_date(date_str):
-    """
-    YYYY/MM/DD, YYYY/M/D, YYYY-MM-DD などの形式を YYYY-MM-DD に正規化する
-    """
+    """YYYY/M/D 等を YYYY-MM-DD に変換"""
     try:
-        # スラッシュをハイフンに置換してから pandas で変換
         return pd.to_datetime(date_str.replace('/', '-')).strftime('%Y-%m-%d')
-    except Exception:
-        return None
+    except: return None
 
-def upload_df_to_drive(df, file_name, folder_id):
-    """DataFrameをCSVとしてDriveに直接アップロード"""
+def upload_df_to_drive(df, file_name):
     service = get_drive_service()
-    if not service:
-        return False
-    
+    if not service: return False
     try:
-        # メモリ上でCSVを作成
         csv_buffer = io.StringIO()
         df.to_csv(csv_buffer)
         csv_buffer.seek(0)
-        
-        file_metadata = {
-            'name': file_name,
-            'parents': [folder_id]
-        }
-        
-        # StringIOの内容をバイナリストリームに変換してアップロード
-        media = MediaIoBaseUpload(
-            io.BytesIO(csv_buffer.getvalue().encode('utf-8')),
-            mimetype='text/csv',
-            resumable=True
-        )
-        
-        file = service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields='id'
-        ).execute()
-        
-        print(f"File ID: {file.get('id')} uploaded to Drive.")
+        file_metadata = {'name': file_name, 'parents': [DRIVE_FOLDER_ID]}
+        media = MediaIoBaseUpload(io.BytesIO(csv_buffer.getvalue().encode('utf-8')), mimetype='text/csv', resumable=True)
+        service.files().create(body=file_metadata, media_body=media).execute()
         return True
-    except Exception as e:
-        print(f"Upload failed: {e}")
-        return False
+    except: return False
 
-def handle_save_command(text):
-    """SAVEコマンドの解析と実行（日付形式の柔軟な処理付き）"""
+# --- エントリポイント (Cloud Functions / Cloud Run 用) ---
+@functions_framework.http
+def callback(request):
+    signature = request.headers.get('X-Line-Signature', '')
+    body = request.get_data(as_text=True)
     try:
-        parts = text.split()
-        if len(parts) < 4:
-            return "⚠️ 形式が正しくありません。\n例: SAVE AAPL 2026/3/1 2026/3/31"
-        
-        ticker = parts[1].upper()
-        # 日付の正規化
-        start = normalize_date(parts[2])
-        end = normalize_date(parts[3])
-        
-        if not start or not end:
-            return "❌ 日付形式が不正です。2026/03/01 または 2026/3/1 の形式で入力してください。"
-        
-        # yfinance で取得
-        df = yf.download(ticker, start=start, end=end, progress=False)
-        
-        if df.empty:
-            return f"❌ {ticker} ({start}〜{end}) のデータが見つかりませんでした。"
-        
-        file_name = f"{ticker}_history_{start}_{end}.csv"
-        success = upload_df_to_drive(df, file_name, DRIVE_FOLDER_ID)
-        
-        if success:
-            return f"✅ {ticker} を保存しました。\n期間: {start} 〜 {end}\nファイル: {file_name}"
-        else:
-            return "❌ Google Driveへの保存に失敗しました。"
-            
-    except Exception as e:
-        return f"❌ システムエラー: {str(e)}"
+        handler.handle(body, signature)
+    except InvalidSignatureError:
+        return 'Invalid signature', 400
+    return 'OK'
         
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
@@ -142,7 +75,27 @@ def handle_message(event):
     
     # 「Market」入力判定 (大文字小文字を区別しない)
     if user_text.upper().startswith("SAVE"):
-        reply_text = handle_save_command(user_text)
+        parts = user_text.split()
+        if len(parts) >= 4:
+            ticker = parts[1].upper()
+            if ticker.isdigit() and len(ticker) == 4: ticker += ".T"
+            start = normalize_date(parts[2])
+            end = normalize_date(parts[3])
+            
+            if start and end:
+                df = yf.download(ticker, start=start, end=end, progress=False)
+                if not df.empty:
+                    file_name = f"{ticker}_history_{start}_{end}.csv"
+                    if upload_df_to_drive(df, file_name):
+                        reply_text = f"✅ {ticker} を保存しました。\n期間: {start} 〜 {end}"
+                    else:
+                        reply_text = "❌ Google Driveへの保存に失敗しました。"
+                else:
+                    reply_text = "⚠️ データが見つかりませんでした。"
+            else:
+                reply_text = "❌ 日付形式が不正です (例: 2026/3/1)。"
+        else:
+            reply_text = "⚠️ 形式: SAVE [銘柄] [開始日] [終了日]"
     elif user_text.lower() == "market":
         reply_text = get_market_intelligence_report()
     else:
