@@ -2,3 +2,7 @@ functions-framework==3.*
 line-bot-sdk>=3.0.0
 yfinance
 pandas
+google-api-python-client
+google-auth
+Flask==3.0.0
+gunicorn==21.2.0
