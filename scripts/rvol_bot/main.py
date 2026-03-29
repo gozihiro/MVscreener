@@ -46,19 +46,26 @@ def normalize_date(date_str):
     except: return None
 
 def upload_df_to_drive(df, file_name):
-    """DataFrameをCSVとしてDriveにアップロード"""
+    """詳細なエラー内容を返すように修正"""
     service = get_drive_service()
-    if not service: return False
+    if isinstance(service, str): # エラー文字列が返ってきた場合
+        return service
+        
     try:
         csv_buffer = io.StringIO()
         df.to_csv(csv_buffer)
         csv_buffer.seek(0)
+        
         file_metadata = {'name': file_name, 'parents': [DRIVE_FOLDER_ID]}
-        media = MediaIoBaseUpload(io.BytesIO(csv_buffer.getvalue().encode('utf-8')), mimetype='text/csv', resumable=True)
+        media = MediaIoBaseUpload(
+            io.BytesIO(csv_buffer.getvalue().encode('utf-8')), 
+            mimetype='text/csv', 
+            resumable=True
+        )
         service.files().create(body=file_metadata, media_body=media).execute()
         return True
     except Exception as e:
-        return f"Error: {str(e)}"
+        return f"ERROR (Upload): {str(e)}"
 
 # --- エントリポイント (Cloud Functions / Cloud Run 用) ---
 @functions_framework.http
@@ -90,14 +97,16 @@ def handle_message(event):
                 df = yf.download(ticker, start=start, end=end, progress=False)
                 if not df.empty:
                     file_name = f"{ticker}_history_{start}_{end}.csv"
-                    if upload_df_to_drive(df, file_name):
-                        reply_text = f"✅ {ticker} を保存しました。\n期間: {start} 〜 {end}\nファイル: {file_name}"
+                    # 戻り値が True 以外ならエラーメッセージとして扱う
+                    result = upload_df_to_drive(df, file_name)
+                    if result is True:
+                        reply_text = f"✅ {ticker} を保存しました。"
                     else:
-                        reply_text = "❌ Google Driveへの保存に失敗しました。"
+                        reply_text = f"❌ 失敗: {result}"
                 else:
                     reply_text = f"⚠️ {ticker} のデータが見つかりませんでした。"
             else:
-                reply_text = "❌ 日付形式が不正です (例: 2026/3/1)。"
+                reply_text = "❌ 日付形式が不正です。"
         else:
             reply_text = "⚠️ 形式: SAVE [銘柄] [開始日] [終了日]"
     elif user_text.lower() == "market":
