@@ -22,7 +22,7 @@ access_token = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 channel_secret = os.environ.get('LINE_CHANNEL_SECRET')
 # [追加] SAVE機能用の認証情報とフォルダID
 creds_json = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
-DRIVE_FOLDER_ID = os.environ.get('DRIVE_FOLDER_ID', '1IqEghqFq3eM2YyS-6K93U5Zf5_C0Z1kF')
+DRIVE_FOLDER_ID = os.environ.get('RETROSPECTIVE_FOLDER_ID', '1IqEghqFq3eM2YyS-6K93U5Zf5_C0Z1kF')
 
 configuration = Configuration(access_token=access_token)
 handler = WebhookHandler(channel_secret)
