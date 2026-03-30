@@ -35,8 +35,15 @@ handler = WebhookHandler(channel_secret)
 
 # --- [修正] SAVEコマンド用ヘルパー関数群 (MVweeklyReport_V3.py のロジックを転記) ---
 def get_drive_service():
-    """Google Drive API 認可 (MVweeklyReport_V3.py と同期)"""
-    if not REFRESH_TOKEN: return None
+    """認証変数の存在チェック付き認可ロジック"""
+    missing = []
+    if not CLIENT_ID: missing.append("CLIENT_ID")
+    if not CLIENT_SECRET: missing.append("CLIENT_SECRET")
+    if not REFRESH_TOKEN: missing.append("REFRESH_TOKEN")
+    
+    if missing:
+        return f"ERROR: Cloud Runの環境変数が不足しています ({', '.join(missing)})"
+
     try:
         creds = Credentials(
             token=None,
@@ -47,8 +54,7 @@ def get_drive_service():
         )
         return build('drive', 'v3', credentials=creds)
     except Exception as e:
-        print(f"Auth Error: {e}")
-        return None
+        return f"ERROR (Auth Init): {str(e)}"
 
 def normalize_date(date_str):
     """YYYY/M/D 等の形式を YYYY-MM-DD に正規化"""
