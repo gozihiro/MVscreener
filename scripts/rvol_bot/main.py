@@ -24,18 +24,18 @@ access_token = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 channel_secret = os.environ.get('LINE_CHANNEL_SECRET')
 
 # [修正] 認可情報を MVweeklyReport_V3.py と同一の環境変数から取得
-CLIENT_ID = os.environ.get('CLIENT_ID')
-CLIENT_SECRET = os.environ.get('CLIENT_SECRET')
-REFRESH_TOKEN = os.environ.get('REFRESH_TOKEN')
-# [修正] 保存先を RETROSPECTIVE_FOLDER_ID に変更
-DRIVE_FOLDER_ID = os.environ.get('RETROSPECTIVE_FOLDER_ID', '1IqEghqFq3eM2YyS-6K93U5Zf5_C0Z1kF')
+CLIENT_ID = os.environ.get('CLIENT_ID', '').strip()
+CLIENT_SECRET = os.environ.get('CLIENT_SECRET', '').strip()
+REFRESH_TOKEN = os.environ.get('REFRESH_TOKEN', '').strip()
+# 保存先フォルダID
+DRIVE_FOLDER_ID = os.environ.get('RETROSPECTIVE_FOLDER_ID', '1IqEghqFq3eM2YyS-6K93U5Zf5_C0Z1kF').strip()
 
 configuration = Configuration(access_token=access_token)
 handler = WebhookHandler(channel_secret)
 
-# --- [修正] SAVEコマンド用ヘルパー関数群 (MVweeklyReport_V3.py のロジックを転記) ---
+# --- [修正] 認証・アップロード関数 (MVweeklyReport_V3.py と同期) ---
 def get_drive_service():
-    """認証変数の存在チェック付き認可ロジック"""
+    """認証変数の存在チェックと認可ロジック"""
     missing = []
     if not CLIENT_ID: missing.append("CLIENT_ID")
     if not CLIENT_SECRET: missing.append("CLIENT_SECRET")
@@ -52,36 +52,50 @@ def get_drive_service():
             client_secret=CLIENT_SECRET,
             token_uri="https://oauth2.googleapis.com/token"
         )
+        # ここでは build するだけで、実際の認証通信は API 実行時に行われます
         return build('drive', 'v3', credentials=creds)
     except Exception as e:
         return f"ERROR (Auth Init): {str(e)}"
 
 def normalize_date(date_str):
-    """YYYY/M/D 等の形式を YYYY-MM-DD に正規化"""
+    import pandas as pd
     try:
         return pd.to_datetime(date_str.replace('/', '-')).strftime('%Y-%m-%d')
     except: return None
 
 def upload_df_to_drive(df, file_name):
-    """DataFrameをCSVとしてDriveにアップロード"""
+    """MVweeklyReport_V3.py の上書きロジックを完全再現"""
     service = get_drive_service()
-    if service is None:
-        return "ERROR: Drive API 認証に失敗しました。環境変数(REFRESH_TOKEN等)を確認してください。"
+    if isinstance(service, str): return service # エラーメッセージを返す
         
     try:
         csv_buffer = io.StringIO()
         df.to_csv(csv_buffer)
         csv_buffer.seek(0)
         
-        file_metadata = {'name': file_name, 'parents': [DRIVE_FOLDER_ID]}
         media = MediaIoBaseUpload(
             io.BytesIO(csv_buffer.getvalue().encode('utf-8')), 
             mimetype='text/csv', 
             resumable=True
         )
-        service.files().create(body=file_metadata, media_body=media).execute()
-        return True
+
+        # [修正] MVweeklyReport_V3.py と同様に同名ファイルの有無を確認
+        query = f"'{DRIVE_FOLDER_ID}' in parents and name = '{file_name}' and trashed = false"
+        res = service.files().list(q=query).execute()
+        files = res.get('files', [])
+
+        if files:
+            # 既存ファイルがあれば更新 (Update)
+            service.files().update(fileId=files[0]['id'], media_body=media).execute()
+            return f"✅ {file_name} を更新しました。"
+        else:
+            # 新規作成 (Create)
+            file_metadata = {'name': file_name, 'parents': [DRIVE_FOLDER_ID]}
+            service.files().create(body=file_metadata, media_body=media).execute()
+            return f"✅ {file_name} を保存しました。"
+            
     except Exception as e:
+        # ここで invalid_grant がキャッチされます
         return f"ERROR (Upload): {str(e)}"
 
 # --- エントリポイント (Cloud Functions / Cloud Run 用) ---
