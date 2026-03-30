@@ -35,14 +35,9 @@ handler = WebhookHandler(channel_secret)
 
 # --- [修正] 認証・アップロード関数 (MVweeklyReport_V3.py と同期) ---
 def get_drive_service():
-    """認証変数の存在チェックと認可ロジック"""
-    missing = []
-    if not CLIENT_ID: missing.append("CLIENT_ID")
-    if not CLIENT_SECRET: missing.append("CLIENT_SECRET")
-    if not REFRESH_TOKEN: missing.append("REFRESH_TOKEN")
-    
-    if missing:
-        return f"ERROR: Cloud Runの環境変数が不足しています ({', '.join(missing)})"
+    """認証変数の存在チェックと診断情報生成"""
+    if not REFRESH_TOKEN:
+        return "ERROR: REFRESH_TOKEN が空です。"
 
     try:
         creds = Credentials(
@@ -52,7 +47,6 @@ def get_drive_service():
             client_secret=CLIENT_SECRET,
             token_uri="https://oauth2.googleapis.com/token"
         )
-        # ここでは build するだけで、実際の認証通信は API 実行時に行われます
         return build('drive', 'v3', credentials=creds)
     except Exception as e:
         return f"ERROR (Auth Init): {str(e)}"
@@ -64,9 +58,9 @@ def normalize_date(date_str):
     except: return None
 
 def upload_df_to_drive(df, file_name):
-    """MVweeklyReport_V3.py の上書きロジックを完全再現"""
+    """診断機能付きアップロードロジック"""
     service = get_drive_service()
-    if isinstance(service, str): return service # エラーメッセージを返す
+    if isinstance(service, str): return service
         
     try:
         csv_buffer = io.StringIO()
@@ -79,25 +73,28 @@ def upload_df_to_drive(df, file_name):
             resumable=True
         )
 
-        # [修正] MVweeklyReport_V3.py と同様に同名ファイルの有無を確認
+        # 既存ファイルの有無を確認
         query = f"'{DRIVE_FOLDER_ID}' in parents and name = '{file_name}' and trashed = false"
         res = service.files().list(q=query).execute()
         files = res.get('files', [])
 
         if files:
-            # 既存ファイルがあれば更新 (Update)
             service.files().update(fileId=files[0]['id'], media_body=media).execute()
             return f"✅ {file_name} を更新しました。"
         else:
-            # 新規作成 (Create)
             file_metadata = {'name': file_name, 'parents': [DRIVE_FOLDER_ID]}
             service.files().create(body=file_metadata, media_body=media).execute()
             return f"✅ {file_name} を保存しました。"
             
     except Exception as e:
-        # ここで invalid_grant がキャッチされます
-        return f"ERROR (Upload): {str(e)}"
-
+        # invalid_grant 時、環境変数の状態を LINE に報告して原因を特定する
+        diag = (
+            f"\n--- 診断情報 ---\n"
+            f"CLIENT_ID: {len(CLIENT_ID)}文字 ({CLIENT_ID[:3]}...{CLIENT_ID[-3:]})\n"
+            f"REFRESH: {len(REFRESH_TOKEN)}文字 ({REFRESH_TOKEN[:3]}...{REFRESH_TOKEN[-3:]})\n"
+            f"SECRET: {len(CLIENT_SECRET)}文字"
+        )
+        return f"ERROR (Drive API): {str(e)}{diag}"
 # --- エントリポイント (Cloud Functions / Cloud Run 用) ---
 @functions_framework.http
 def callback(request):
