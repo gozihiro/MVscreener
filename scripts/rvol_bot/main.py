@@ -124,12 +124,8 @@ def handle_message(event):
                 df = yf.download(ticker, start=start, end=end, progress=False)
                 if not df.empty:
                     file_name = f"{ticker}_history_{start}_{end}.csv"
-                    # 戻り値が True 以外ならエラーメッセージとして扱う
-                    result = upload_df_to_drive(df, file_name)
-                    if result is True:
-                        reply_text = f"✅ {ticker} を保存しました。"
-                    else:
-                        reply_text = f"❌ 失敗: {result}"
+                    # upload_df_to_driveは既に「✅...」または「ERROR...」の文字列を返すため、そのまま代入
+                    reply_text = upload_df_to_drive(df, file_name)
                 else:
                     reply_text = f"⚠️ {ticker} のデータが見つかりませんでした。"
             else:
