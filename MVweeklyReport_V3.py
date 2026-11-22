@@ -17,6 +17,7 @@ REFRESH_TOKEN = os.environ.get('REFRESH_TOKEN')
 SUMMARY_FOLDER_ID = os.environ.get('SUMMARY_FOLDER_ID')
 ACCUMULATION_FOLDER_ID = os.environ.get('ACCUMULATION_FOLDER_ID')
 
+
 def get_drive_service():
     """Google Drive API 認可"""
     creds = Credentials(
@@ -28,46 +29,61 @@ def get_drive_service():
     )
     return build('drive', 'v3', credentials=creds)
 
+
+def normalize_date_str(raw_d, fallback_year=None):
+    """
+    '2026/11/18' のような YYYY/MM/DD 形式はそのまま保持し、
+    旧形式 '11/18' の場合のみ年を補完する（2026年ハードコード廃止）。
+    """
+    s = str(raw_d).strip()
+    if re.match(r'^\d{4}/\d{2}/\d{2}$', s):
+        return s
+    yr = fallback_year or datetime.now().year
+    if re.match(r'^\d{2}/\d{2}$', s):
+        return f"{yr}/{s}"
+    return s
+
+
 def calculate_dd_history(ticker, threshold=-0.002):
-    """指数の履歴から売り抜け日の推移を計算（5%失効ルール近似版）"""
+    """指数の履歴から売り抜け日の推移を計算（screener_v3.pyと同一仕様：出来高前日比増＋5%失効ルール）"""
     try:
         idx = yf.download(ticker, period="100d", progress=False, auto_adjust=True)
-        if idx.empty: return [0]*30, ["-"]*30
-        if isinstance(idx.columns, pd.MultiIndex): idx.columns = idx.columns.get_level_values(0)
-        
-        c = idx['Close'].squeeze()
-        v = idx['Volume'].squeeze()
-        v_sma50 = v.rolling(50).mean()
+        if idx.empty or len(idx) < 35:
+            return [0] * 30, ["-"] * 30
+        if isinstance(idx.columns, pd.MultiIndex):
+            idx.columns = idx.columns.get_level_values(0)
+
+        c = idx['Close'].squeeze().dropna()
+        v = idx['Volume'].squeeze().reindex(c.index)
         changes = c.pct_change()
-        
-        # 基本的な売り抜け日判定
-        is_dd_base = (changes <= threshold) & (v > v.shift(1)) & (v > v_sma50)
-        
+
+        # screener_v3.pyと統一（50日平均出来高制約を外し、標準DD基準に揃える）
+        is_dd_base = (changes <= threshold) & (v > v.shift(1))
+
         dd_counts = []
-        # 各日において過去25日間の累積を計算（5%ルールを考慮）
         for i in range(len(c) - 30, len(c)):
             count = 0
-            # 過去25取引日を検証
             for j in range(i - 24, i + 1):
-                if j < 0: continue
+                if j < 1:
+                    continue
                 if is_dd_base.iloc[j]:
-                    # 5%失効判定: その日(j)から計算対象日(i)までの間に株価が5%以上戻したか
-                    subsequent_high = c.iloc[j+1 : i+1].max() if j < i else 0
+                    subsequent_high = c.iloc[j + 1:i + 1].max() if j < i else 0
                     if not (subsequent_high >= c.iloc[j] * 1.05):
                         count += 1
             dd_counts.append(count)
-            
-        labels = [f"2026/{d}" for d in c.index[-30:].strftime('%m/%d')]
+
+        labels = [d.strftime('%Y/%m/%d') for d in c.index[-30:]]
         return dd_counts, labels
-    except:
-        return [0]*30, ["-"]*30
+    except Exception:
+        return [0] * 30, ["-"] * 30
+
 
 def get_accumulation_ranking(service):
     """Accumulationフォルダ内のCSVを解析しランキングデータを生成"""
     states = []
     page_token = None
     query = f"'{ACCUMULATION_FOLDER_ID}' in parents and trashed = false"
-    
+
     while True:
         results = service.files().list(q=query, fields="nextPageToken, files(id, name)", pageToken=page_token).execute()
         for f in results.get('files', []):
@@ -76,34 +92,36 @@ def get_accumulation_ranking(service):
                     parts = f['name'].split('_')
                     persistence = int(parts[0][1:3])
                     ticker = parts[1]
-                    
+
                     request = service.files().get_media(fileId=f['id'])
                     fh = io.BytesIO()
                     downloader = MediaIoBaseDownload(fh, request)
                     done = False
-                    while not done: _, done = downloader.next_chunk()
+                    while not done:
+                        _, done = downloader.next_chunk()
                     fh.seek(0)
                     df = pd.read_csv(fh)
-                    
-                    if len(df) < 10: continue
-                    
+
+                    if len(df) < 10:
+                        continue
+
                     df['is_up'] = (df['Close'] > df['Open']) & (df['Close'] > df['Close'].shift(1))
                     consistency = (df['is_up'].tail(10).sum() / 10) * 100
-                    
+
                     high_50 = df['High'].max()
                     last_close = df['Close'].iloc[-1]
                     proximity = (last_close / high_50) * 100
-                    
+
                     df['range'] = df['High'] - df['Low']
                     avg_range = df['range'].tail(10).mean()
                     tightness = (1 - (df['range'].iloc[-1] / avg_range)) * 100 if avg_range > 0 else 0
-                    
+
                     ema13 = df['Close'].ewm(span=13, adjust=False).mean()
                     macd = df['Close'].ewm(span=12, adjust=False).mean() - df['Close'].ewm(span=26, adjust=False).mean()
                     impulse = 1 if (ema13.iloc[-1] > ema13.iloc[-2] and macd.iloc[-1] > macd.iloc[-2]) else 0
-                    
+
                     score = (consistency * 0.3) + (proximity * 0.4) + (max(0, tightness) * 0.2) + (impulse * 10)
-                    
+
                     states.append({
                         "ticker": ticker,
                         "persistence": persistence,
@@ -113,21 +131,29 @@ def get_accumulation_ranking(service):
                         "tightness": "タイト" if tightness > 20 else "通常",
                         "impulse": "Blue" if impulse == 1 else "Neutral"
                     })
-                except: continue
+                except Exception:
+                    continue
         page_token = results.get('nextPageToken')
-        if not page_token: break
-        
+        if not page_token:
+            break
+
     return states
 
-def create_intelligence_report(df, acc_data=[]):
-    """HTMLレポート生成（領域分割・個別優先順位設定版）"""
-    date_cols = sorted([c for c in df.columns if '価格_' in c])
-    dates = [c.split('_')[-1] for c in date_cols]
-    
+
+def create_intelligence_report(df, acc_data=[], history_override=None):
+    """HTMLレポート生成（デュアルFTD対応・動的年号・CSS補完版）"""
+    date_cols = [c for c in df.columns if c.startswith('価格_')]
+    raw_dates = [c[len('価格_'):] for c in date_cols]
+    fallback_year = datetime.now().year
+    date_pairs = sorted(
+        [(normalize_date_str(rd, fallback_year), rd) for rd in raw_dates],
+        key=lambda x: x[0]
+    )
+
     market_row = df[df['銘柄'] == '### MARKET_ENVIRONMENT ###'].iloc[0]
     market_data = []
-    for d in dates:
-        meta = str(market_row.get(f'価格_{d}', ""))
+    for norm_d, raw_d in date_pairs:
+        meta = str(market_row.get(f'価格_{raw_d}', ""))
         if meta and meta != "－" and "A/D比" in meta:
             if " /// " in meta:
                 parts = meta.split(" /// ")
@@ -141,7 +167,7 @@ def create_intelligence_report(df, acc_data=[]):
             dist_jp = re.search(r'売り抜け:\s*(\d+)', jp_part)
 
             market_data.append({
-                "date": f"2026/{d}",
+                "date": norm_d,
                 "status_us": us_part.split('|')[0].strip() if '|' in us_part else "不明",
                 "ad_us": float(ad_us.group(1)) if ad_us else 1.0,
                 "dist_us": int(dist_us.group(1)) if dist_us else 0,
@@ -151,29 +177,35 @@ def create_intelligence_report(df, acc_data=[]):
                 "valid": True
             })
         else:
-            market_data.append({"date": f"2026/{d}", "status_us": "データ収集中", "status_jp": "データ収集中", "ad_us": 1.0, "dist_us": 0, "ad_jp": 1.0, "dist_jp": 0, "valid": False})
+            market_data.append({
+                "date": norm_d, "status_us": "データ収集中", "status_jp": "データ収集中",
+                "ad_us": 1.0, "dist_us": 0, "ad_jp": 1.0, "dist_jp": 0, "valid": False
+            })
 
-    us_history_data, labels_history = calculate_dd_history("^GSPC", -0.002)
-    jp_history_data, _ = calculate_dd_history("1321.T", -0.004)
+    if history_override is not None:
+        us_history_data, labels_history, jp_history_data = history_override
+    else:
+        us_history_data, labels_history = calculate_dd_history("^GSPC", -0.002)
+        jp_history_data, _ = calculate_dd_history("1321.T", -0.004)
 
     stock_rows = df[df['銘柄'] != '### MARKET_ENVIRONMENT ###'].copy()
     stocks_json = []
     for _, row in stock_rows.iterrows():
         prices, patterns, growths, launchpads = {}, {}, {}, {}
         ema10s, sma20s, sma50s = {}, {}, {}
-        for d in dates:
-            p_val = pd.to_numeric(row.get(f'価格_{d}'), errors='coerce')
-            prices[f"2026/{d}"] = float(p_val) if pd.notnull(p_val) else None
-            patterns[f"2026/{d}"] = str(row.get(f'パターン_{d}', ""))
-            growths[f"2026/{d}"] = float(pd.to_numeric(row.get(f'売上成長(%)_{d}'), errors='coerce') or 0)
-            lp_val = pd.to_numeric(row.get(f'発射台スコア_{d}'), errors='coerce')
-            launchpads[f"2026/{d}"] = float(lp_val) if pd.notnull(lp_val) else 0
-            e10_val = pd.to_numeric(row.get(f'10EMA_{d}'), errors='coerce')
-            ema10s[f"2026/{d}"] = float(e10_val) if pd.notnull(e10_val) else None
-            s20_val = pd.to_numeric(row.get(f'20SMA_{d}'), errors='coerce')
-            sma20s[f"2026/{d}"] = float(s20_val) if pd.notnull(s20_val) else None
-            s50_val = pd.to_numeric(row.get(f'50SMA_{d}'), errors='coerce')
-            sma50s[f"2026/{d}"] = float(s50_val) if pd.notnull(s50_val) else None
+        for norm_d, raw_d in date_pairs:
+            p_val = pd.to_numeric(row.get(f'価格_{raw_d}'), errors='coerce')
+            prices[norm_d] = float(p_val) if pd.notnull(p_val) else None
+            patterns[norm_d] = str(row.get(f'パターン_{raw_d}', ""))
+            growths[norm_d] = float(pd.to_numeric(row.get(f'売上成長(%)_{raw_d}'), errors='coerce') or 0)
+            lp_val = pd.to_numeric(row.get(f'発射台スコア_{raw_d}'), errors='coerce')
+            launchpads[norm_d] = float(lp_val) if pd.notnull(lp_val) else 0
+            e10_val = pd.to_numeric(row.get(f'10EMA_{raw_d}'), errors='coerce')
+            ema10s[norm_d] = float(e10_val) if pd.notnull(e10_val) else None
+            s20_val = pd.to_numeric(row.get(f'20SMA_{raw_d}'), errors='coerce')
+            sma20s[norm_d] = float(s20_val) if pd.notnull(s20_val) else None
+            s50_val = pd.to_numeric(row.get(f'50SMA_{raw_d}'), errors='coerce')
+            sma50s[norm_d] = float(s50_val) if pd.notnull(s50_val) else None
 
         stocks_json.append({
             "ticker": str(row['銘柄']),
@@ -182,7 +214,7 @@ def create_intelligence_report(df, acc_data=[]):
         })
 
     full_data_payload = {
-        "dates": [f"2026/{d}" for d in dates],
+        "dates": [norm_d for norm_d, _ in date_pairs],
         "market": market_data, "stocks": stocks_json, "accumulation": acc_data,
         "history": {"labels": labels_history, "us": us_history_data, "jp": jp_history_data}
     }
@@ -197,11 +229,8 @@ def create_intelligence_report(df, acc_data=[]):
         <style>
             body {{ font-family: 'Segoe UI', system-ui, sans-serif; background: #f0f4f8; margin: 0; padding: 20px; color: #2c3e50; }}
             .container {{ max-width: 1200px; margin: auto; }}
-            /* 修正: 目次(ナビゲーションバー)のスタイル追加 */
             .nav-bar {{ background: #1a2a3a; padding: 15px; border-radius: 12px; margin-bottom: 25px; position: sticky; top: 10px; z-index: 1000; box-shadow: 0 4px 15px rgba(0,0,0,0.2); display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }}
-            /* 修正: 目次リンクのスタイル追加 */
             .nav-bar a {{ color: #ecf0f1; text-decoration: none; font-weight: bold; font-size: 0.85em; padding: 6px 12px; border-radius: 6px; background: #34495e; transition: 0.3s; }}
-            /* 修正: 目次リンクのホバー時スタイル追加 */
             .nav-bar a:hover {{ background: #3498db; }}
             .control-panel {{ background: #1a2a3a; color: white; padding: 25px; border-radius: 15px; display: flex; align-items: center; gap: 30px; margin-bottom: 30px; position: sticky; top: 10px; z-index: 1000; box-shadow: 0 8px 20px rgba(0,0,0,0.15); }}
             .date-input {{ background: #2c3e50; border: 1px solid #455a64; color: white; padding: 10px; border-radius: 8px; font-size: 1em; cursor: pointer; }}
@@ -222,6 +251,8 @@ def create_intelligence_report(df, acc_data=[]):
             .q-badge {{ padding: 2px 6px; border-radius: 4px; font-size: 0.75em; font-weight: bold; text-transform: uppercase; }}
             .q-trend {{ background: #e8f5e9; color: #2e7d32; border: 1px solid #c8e6c9; }}
             .q-strict {{ background: #fff3e0; color: #ef6c00; border: 1px solid #ffe0b2; }}
+            .change-up {{ background: #e8f5e9; color: #2e7d32; }}
+            .change-down {{ background: #ffebee; color: #c62828; }}
             .metric-box {{ background: #f1f3f5; padding: 12px; border-radius: 10px; margin: 15px 0; font-size: 0.9em; }}
             .metric-row {{ display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #dee2e6; }}
             .metric-row:last-child {{ border-bottom: none; }}
@@ -265,7 +296,8 @@ def create_intelligence_report(df, acc_data=[]):
                 <div class="explanation-box">
                     <b>📈 需給診断のポイント:</b><br>
                     ・<b>A/D比（青線）：</b> 市場全体の「健康度」。上昇は個別株への広範な買いを、下落は一部銘柄への資金集中または全体的な投げ売りを意味します。<br>
-                    ・<b>売り抜け日（赤棒）：</b> 指数の下落と出来高増が重なった「機関投資家の出口戦略」の痕跡。6〜7日を超えると「下落警戒」となります。
+                    ・<b>売り抜け日（赤棒）：</b> 指数の下落と出来高増が重なった「機関投資家の出口戦略」の痕跡。6〜7日を超えると「下落警戒」となります。<br>
+                    ・<b>FTD（Follow-Through Day）：</b> S&P500またはNasdaqのいずれかがラリー試行4〜10日目に+1.25%以上・出来高増・DCR 0.50以上で点灯。50MA下でも初動点灯を識別し、直後5日以内の安値割れ・DD2回で失敗判定を行います。
                 </div>
             </div>
             <div id="accumulation-ranking-area"></div>
@@ -308,7 +340,7 @@ def create_intelligence_report(df, acc_data=[]):
                 const mEnd = data.market.find(m => m.date === latestDate);
                 document.getElementById('market-stats').innerHTML = `
                     <div class="market-status-box">
-                        <h3>🇺🇸 米国市場 (S&P500)</h3>
+                        <h3>🇺🇸 米国市場 (S&P500 / Nasdaq FTD)</h3>
                         <div class="status-metrics">
                             <div><div class="metric-label">現状</div><div class="metric-val">${{mEnd.status_us}}</div></div>
                             <div><div class="metric-label">A/D比</div><div class="metric-val">${{mEnd.ad_us.toFixed(2)}}</div></div>
@@ -325,8 +357,6 @@ def create_intelligence_report(df, acc_data=[]):
                     </div>
                 `;
 
-                // Accumulation Ranking
-                /* 修正: Accumulationセクションに目次用IDを追加 */
                 let accHtml = '<div class="card" id="sec-acc"><h2 style="margin-top:0;">💎 Accumulation Survival Ranking</h2>';
                 const accTiers = [
                     {{ label: "🔥 熟成 (10日以上)", filter: d => d.persistence >= 10 }},
@@ -345,7 +375,6 @@ def create_intelligence_report(df, acc_data=[]):
                 }});
                 document.getElementById('accumulation-ranking-area').innerHTML = accHtml + '</div>';
 
-                /* 修正: analyzed定数のマッピング処理内で、騰落率およびフィルタリング条件を追加 */
                 const analyzedRaw = data.stocks.map(s => {{
                     const pricesInPeriod = targetDates.map(d => s.prices[d]).filter(p => p !== null);
                     if (pricesInPeriod.length < 1) return null;
@@ -353,7 +382,6 @@ def create_intelligence_report(df, acc_data=[]):
                     const change = pricesInPeriod.length >= 2 ? ((pricesInPeriod[persistence - 1] / pricesInPeriod[0]) - 1) * 100 : 0;
                     const vol = pricesInPeriod.length >= 2 ? ((Math.max(...pricesInPeriod) - Math.min(...pricesInPeriod)) / Math.min(...pricesInPeriod)) * 100 : 0;
                     const latestLaunchpad = s.launchpads[latestDate] || 0;
-                    /* 修正: 当日騰落率(dailyChange)の算出を追加 */
                     const pLatest = s.prices[latestDate];
                     const pPrev = targetDates.length >= 2 ? s.prices[targetDates[targetDates.length - 2]] : pLatest;
                     const dailyChange = (pLatest && pPrev) ? ((pLatest / pPrev) - 1) * 100 : 0;
@@ -395,11 +423,9 @@ def create_intelligence_report(df, acc_data=[]):
                         if (s.launchpads[d] > launchpad) launchpad = s.launchpads[d];
                         if (pattern === "－" && s.patterns[d] && s.patterns[d] !== "－") pattern = s.patterns[d];
                     }}
-                    /* 修正: returnオブジェクトにdailyChangeを追加 */
                     return {{ ticker: s.ticker, persistence, change, vol, growth, pattern, launchpad, latestLaunchpad, stealthScore, momentumStealthScore, isTrendOk, isStrictVcp, dailyChange }};
                 }}).filter(x => x !== null);
 
-                /* 修正: MA Squeezeパターンかつ上昇率0.8%未満の銘柄をリストから除外 */
                 const analyzed = analyzedRaw.filter(x => {{
                     if (x.pattern.includes('MA_Squeeze') && x.dailyChange < 0.8) return false;
                     return true;
@@ -414,67 +440,66 @@ def create_intelligence_report(df, acc_data=[]):
                 }};
 
                 const sections = [
-                    {{ 
-                        title: "🎯 Micro-VCP (静寂からのブレイク準備)", 
-                        id: "sec-micro", /* 修正: 目次用IDを追加 */
-                        hint: "優先順位: 最新発射台 ➔ 定着日数 ➔ 低リスク(Risk%)", 
+                    {{
+                        title: "🎯 Micro-VCP (静寂からのブレイク準備)",
+                        id: "sec-micro",
+                        hint: "優先順位: 最新発射台 ➔ 定着日数 ➔ 低リスク(Risk%)",
                         data: analyzed.filter(x => x.pattern.includes('Micro-VCP'))
                                       .sort((a, b) => {{
                                           if (b.latestLaunchpad !== a.latestLaunchpad) {{
                                               return b.latestLaunchpad - a.latestLaunchpad;
                                           }}
                                           return b.persistence - a.persistence;
-                                      }}) 
+                                      }})
                     }},
-                    {{ 
-                        title: "🚀 MA Squeeze (トレンド転換: 50SMA同調)", /* 修正: REEDスタイルをトレンド転換に細分化 */
-                        id: "sec-trend", /* 修正: 目次用IDを追加 */
-                        hint: "10/20/50線がすべて上向き、収束から上方拡散を開始した銘柄", 
+                    {{
+                        title: "🚀 MA Squeeze (トレンド転換: 50SMA同調)",
+                        id: "sec-trend",
+                        hint: "10/20/50線がすべて上向き、収束から上方拡散を開始した銘柄",
                         data: analyzed.filter(x => x.pattern.includes('MA_Squeeze') && x.pattern.includes('10E/20S/50S↑'))
-                                      .sort((a, b) => b.latestLaunchpad - a.latestLaunchpad) 
+                                      .sort((a, b) => b.latestLaunchpad - a.latestLaunchpad)
                     }},
-                    {{ 
-                        title: "🌱 MA Squeeze (拡散初期: 10EMA先行)", /* 修正: REEDスタイルを拡散初期に細分化 */
-                        id: "sec-start", /* 修正: 目次用IDを追加 */
-                        hint: "10EMAが反発し、収束からの離脱が始まった銘柄", 
+                    {{
+                        title: "🌱 MA Squeeze (拡散初期: 10EMA先行)",
+                        id: "sec-start",
+                        hint: "10EMAが反発し、収束からの離脱が始まった銘柄",
                         data: analyzed.filter(x => x.pattern.includes('MA_Squeeze') && x.pattern.includes('10E↑') && !x.pattern.includes('50S↑'))
-                                      .sort((a, b) => b.latestLaunchpad - a.latestLaunchpad) 
+                                      .sort((a, b) => b.latestLaunchpad - a.latestLaunchpad)
                     }},
-                    {{ title: "🏆 Super Performance (全条件合格)", id: "sec-vcp", /* 修正: 目次用IDを追加(VCP系と統合) */ hint: "優先順位: 最新スコア ➔ 定着日数", 
+                    {{ title: "🏆 Super Performance (全条件合格)", id: "sec-vcp", hint: "優先順位: 最新スコア ➔ 定着日数",
                         data: analyzed.filter(x => x.isTrendOk && x.isStrictVcp).sort(getSorter(['latestLaunchpad','persistence'], [-1,-1])).slice(0,10) }},
-                    {{ title: "🚀 Ready to Launch (即応銘柄) 総合 TOP 5", hint: "優先順位: 最新発射台 ➔ 定着 ➔ 成長率", 
+                    {{ title: "🚀 Ready to Launch (即応銘柄) 総合 TOP 5", hint: "優先順位: 最新発射台 ➔ 定着 ➔ 成長率",
                         data: analyzed.filter(x => x.latestLaunchpad > 0).sort(getSorter(['latestLaunchpad','persistence','growth'], [-1,-1,-1])).slice(0,5) }},
-                    {{ title: "🚀 VCP [Quality Validated]", hint: "品質タグ合格銘柄 (すべて表示) | 順位: 定着日数 ➔ 最新発射台", 
+                    {{ title: "🚀 VCP [Quality Validated]", hint: "品質タグ合格銘柄 (すべて表示) | 順位: 定着日数 ➔ 最新発射台",
                         data: analyzed.filter(x => x.pattern.includes('VCP') && (x.isTrendOk || x.isStrictVcp)).sort(getSorter(['persistence','latestLaunchpad'], [-1,-1])) }},
-                    {{ title: "🚀 VCP [Category TOP 5]", hint: "品質不問 | 優先順位: 定着日数 ➔ 最新発射台", 
+                    {{ title: "🚀 VCP [Category TOP 5]", hint: "品質不問 | 優先順位: 定着日数 ➔ 最新発射台",
                         data: analyzed.filter(x => x.pattern.includes('VCP')).sort(getSorter(['persistence','latestLaunchpad'], [-1,-1])).slice(0,5) }},
-                    {{ title: "⚡ PowerPlay [Trend Validated]", hint: "品質タグ合格銘柄 (すべて表示) | 順位: 定着日数 ➔ 期間騰落率", 
+                    {{ title: "⚡ PowerPlay [Trend Validated]", hint: "品質タグ合格銘柄 (すべて表示) | 順位: 定着日数 ➔ 期間騰落率",
                         data: analyzed.filter(x => x.pattern.includes('PowerPlay') && (x.isTrendOk || x.isStrictVcp)).sort(getSorter(['persistence','change'], [-1,-1])) }},
-                    {{ title: "⚡ PowerPlay [Category TOP 5]", hint: "品質不問 | 優先順位: 期間騰落率 ➔ 定着日数", 
+                    {{ title: "⚡ PowerPlay [Category TOP 5]", hint: "品質不問 | 優先順位: 期間騰落率 ➔ 定着日数",
                         data: analyzed.filter(x => x.pattern.includes('PowerPlay')).sort(getSorter(['change','persistence'], [-1,-1])).slice(0,5) }},
-                    {{ title: "📐 High-Base(Strict) [Quality Validated]", id: "sec-hb", /* 修正: 目次用IDを追加 */ hint: "品質タグ合格銘柄 (すべて表示) | 順位: 定着日数 ➔ 最新発射台", 
+                    {{ title: "📐 High-Base(Strict) [Quality Validated]", id: "sec-hb", hint: "品質タグ合格銘柄 (すべて表示) | 順位: 定着日数 ➔ 最新発射台",
                         data: analyzed.filter(x => x.pattern.includes('High-Base(Strict')).sort(getSorter(['persistence','latestLaunchpad'], [-1,-1])) }},
-                    {{ title: "📐 High-Base(Strict) [Category TOP 5]", hint: "品質不問 | 優先順位: 定着日数 ➔ 最新発射台", 
+                    {{ title: "📐 High-Base(Strict) [Category TOP 5]", hint: "品質不問 | 優先順位: 定着日数 ➔ 最新発射台",
                         data: analyzed.filter(x => x.pattern.includes('High-Base(Strict')).sort(getSorter(['persistence','latestLaunchpad'], [-1,-1])).slice(0,5) }},
-                    {{ title: "📐 High-Base [Quality Validated]", hint: "品質タグ合格銘柄 (すべて表示) | 順位: 定着日数 ➔ 最新発射台", 
+                    {{ title: "📐 High-Base [Quality Validated]", hint: "品質タグ合格銘柄 (すべて表示) | 順位: 定着日数 ➔ 最新発射台",
                         data: analyzed.filter(x => x.pattern.includes('High-Base') && !x.pattern.includes('Strict') && (x.isTrendOk || x.isStrictVcp)).sort(getSorter(['persistence','latestLaunchpad'], [-1,-1])) }},
-                    {{ title: "📐 High-Base [Category TOP 5]", hint: "品質不問 | 優先順位: 定着日数 ➔ 最新発射台", 
+                    {{ title: "📐 High-Base [Category TOP 5]", hint: "品質不問 | 優先順位: 定着日数 ➔ 最新発射台",
                         data: analyzed.filter(x => x.pattern.includes('High-Base') && !x.pattern.includes('Strict')).sort(getSorter(['persistence','latestLaunchpad'], [-1,-1])).slice(0,5) }},
-                    {{ title: "🕵️ Stealth Accumulation (隠密買い集め)", hint: "優先順位: 隠密スコア ➔ 定着 ➔ 低ボラ", 
+                    {{ title: "🕵️ Stealth Accumulation (隠密買い集め)", hint: "優先順位: 隠密スコア ➔ 定着 ➔ 低ボラ",
                         data: analyzed.filter(x => x.stealthScore > 0).sort(getSorter(['stealthScore','persistence','vol'], [-1,-1,1])).slice(0,5) }},
-                    {{ title: "🕵️ Momentum Stealth (短期加速)", hint: "優先順位: 隠密スコア ➔ 定着 ➔ 低ボラ", 
+                    {{ title: "🕵️ Momentum Stealth (短期加速)", hint: "優先順位: 隠密スコア ➔ 定着 ➔ 低ボラ",
                         data: analyzed.filter(x => x.momentumStealthScore > 0).sort(getSorter(['momentumStealthScore','persistence','vol'], [-1,-1,1])).slice(0,5) }},
-                    {{ title: "🏆 総合・サバイバルリーダー", hint: "優先順位: 定着 ➔ 騰落率 ➔ 成長率", 
+                    {{ title: "🏆 総合・サバイバルリーダー", hint: "優先順位: 定着 ➔ 騰落率 ➔ 成長率",
                         data: [...analyzed].sort(getSorter(['persistence','change','growth'], [-1,-1,-1])).slice(0,5) }}
                 ];
 
                 let html = "";
                 sections.forEach(sec => {{
-                    /* 修正: card要素に目次用ID(sec.id)を反映。また、騰落率表示を各カードに追加 */
                     html += `<div class="card" id="${{sec.id || ''}}"><h2 class="section-title">${{sec.title}}</h2><p class="priority-hint">${{sec.hint}}</p><div class="rank-grid">`;
                     if (sec.data.length === 0) html += "<p>対象なし</p>";
                     sec.data.forEach((s, idx) => {{
-                        const cClass = s.dailyChange >= 0 ? 'change-up' : 'change-down'; /* 修正: 騰落率に応じたクラス判定 */
+                        const cClass = s.dailyChange >= 0 ? 'change-up' : 'change-down';
                         const badges = (s.isTrendOk ? '<span class="q-badge q-trend">Trend_OK</span>' : '') + (s.isStrictVcp ? '<span class="q-badge q-strict">VCP_Strict</span>' : '');
                         html += `
                         <div class="rank-card">
@@ -495,7 +520,6 @@ def create_intelligence_report(df, acc_data=[]):
                 }});
                 document.getElementById('dynamic-rankings-area').innerHTML = html;
 
-                // --- チャート描画 ---
                 const historyLabels = data.history.labels;
                 const usAdValues = historyLabels.map(label => {{
                     const m = data.market.find(m => m.date === label);
@@ -530,6 +554,7 @@ def create_intelligence_report(df, acc_data=[]):
     """
     return html_content
 
+
 def upload_to_drive(content, filename):
     service = get_drive_service()
     fh = io.BytesIO(content.encode('utf-8'))
@@ -545,19 +570,22 @@ def upload_to_drive(content, filename):
         service.files().create(body=file_metadata, media_body=media).execute()
         print(f"Created: {filename}")
 
+
 if __name__ == "__main__":
     service = get_drive_service()
     query = f"'{SUMMARY_FOLDER_ID}' in parents and name contains 'weekly_detailed_trend' and trashed = false"
-    res = service.files().list(q=query, fields="files(id, name)", orderBy="createdTime desc").execute()
+    res = service.files().list(q=query, fields="files(id, name)", orderBy="modifiedTime desc").execute()
     if not res.get('files'):
-        print("CSV file not found."); sys.exit(1)
+        print("CSV file not found.")
+        sys.exit(1)
     file_id = res['files'][0]['id']
     csv_name = res['files'][0]['name']
     request = service.files().get_media(fileId=file_id)
     fh = io.BytesIO()
     downloader = MediaIoBaseDownload(fh, request)
     done = False
-    while not done: _, done = downloader.next_chunk()
+    while not done:
+        _, done = downloader.next_chunk()
     fh.seek(0)
     trend_df = pd.read_csv(fh, dtype=str)
     accumulation_data = get_accumulation_ranking(service)
